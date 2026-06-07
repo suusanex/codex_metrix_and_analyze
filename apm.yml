@@ -1,0 +1,12 @@
+name: codex_metrix_and_analyze
+version: 1.0.0
+description: APM project for codex_metrix_and_analyze
+author: suusanex
+dependencies:
+  apm:
+  - suusanex/coding_agent_plan_and_verify_process/apm-packages/token-aware-guardrail-kernel-flow
+  - suusanex/coding_agent_plan_and_verify_process/apm-packages/token-aware-full-coverage-3layer
+  - suusanex/agent_skills_dotnet_utility/.agents/skills/dotnet-file-based-apps
+  mcp: []
+includes: auto
+scripts: {}
