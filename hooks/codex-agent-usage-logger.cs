@@ -1,4 +1,7 @@
 using System.Security.Cryptography;
+using System.Diagnostics;
+using System.Globalization;
+using System.Threading;
 using System.Text;
 using System.Text.Json;
 
@@ -6,6 +9,9 @@ return await ProgramEntry.RunAsync();
 
 internal static class ProgramEntry
 {
+    private const int LogMutexRetryDelayMilliseconds = 50;
+    private const int LogMutexAcquireTimeoutMilliseconds = 5_000;
+
     public static async Task<int> RunAsync()
     {
         string? rawInput = null;
@@ -41,7 +47,6 @@ internal static class ProgramEntry
         var stateDir = Environment.GetEnvironmentVariable("CODEX_AGENT_USAGE_STATE")
             ?? Path.Combine(codexHome, "hook-state");
 
-        Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
         Directory.CreateDirectory(stateDir);
 
         var eventName = GetString(payload, "hook_event_name") ?? "Unknown";
@@ -96,8 +101,9 @@ internal static class ProgramEntry
                         durationMs = (int)Math.Round((timestamp - startTime) * 1000);
                     }
                 }
-                catch
+                catch (Exception ex)
                 {
+                    TryAppendErrorLog("state-read-failed", ex, payload);
                     durationMs = null;
                 }
             }
@@ -146,7 +152,7 @@ internal static class ProgramEntry
             writer.WriteEndObject();
         });
 
-        await File.AppendAllTextAsync(logPath, line + Environment.NewLine, Encoding.UTF8);
+        AppendLine(logPath, line);
     }
 
     private static void TryAppendErrorLog(string errorKind, Exception exception, JsonElement? payload)
@@ -186,11 +192,12 @@ internal static class ProgramEntry
                 writer.WriteEndObject();
             });
 
-            File.AppendAllText(errorLogPath, line + Environment.NewLine, Encoding.UTF8);
+            AppendLine(errorLogPath, line);
         }
         catch
         {
-            // Hook errors should never break Codex flow.
+            Trace.TraceError(exception.ToString());
+            Trace.TraceError($"Failed to append hook error log: {errorKind}");
         }
     }
 
@@ -251,6 +258,99 @@ internal static class ProgramEntry
     private static string ToIso8601(DateTimeOffset timestamp)
     {
         return timestamp.ToString("O");
+    }
+
+    private static string GetDailyLogPath(string path)
+    {
+        var directory = Path.GetDirectoryName(path);
+        var fileName = Path.GetFileName(path);
+
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            return path;
+        }
+
+        var localDate = DateTimeOffset.Now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var extension = Path.GetExtension(fileName);
+        var fileNameWithoutExtension = Path.GetFileNameWithoutExtension(fileName);
+        var dailyFileName = string.IsNullOrEmpty(extension)
+            ? $"{fileNameWithoutExtension}-{localDate}"
+            : $"{fileNameWithoutExtension}-{localDate}{extension}";
+        return string.IsNullOrWhiteSpace(directory) ? dailyFileName : Path.Combine(directory, dailyFileName);
+    }
+
+    private static string GetLogMutexName(string path)
+    {
+        var normalizedPath = Path.GetFullPath(path).ToLowerInvariant();
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(normalizedPath));
+        var hex = Convert.ToHexString(bytes).ToLowerInvariant();
+        return $@"Global\CodexAgentUsageLogger-{hex[..32]}";
+    }
+
+    private static void AppendLine(string baseLogPath, string line)
+    {
+        var logPath = GetDailyLogPath(baseLogPath);
+        var mutexName = GetLogMutexName(logPath);
+        bool hasLock = false;
+        var endTime = DateTimeOffset.UtcNow.AddMilliseconds(LogMutexAcquireTimeoutMilliseconds);
+
+        using var mutex = new Mutex(false, mutexName);
+
+        try
+        {
+            while (!hasLock)
+            {
+                var remaining = endTime - DateTimeOffset.UtcNow;
+                if (remaining <= TimeSpan.Zero)
+                {
+                    throw new TimeoutException($"Timeout waiting for log file mutex: {logPath}");
+                }
+
+                var waitMilliseconds = (int)Math.Min(LogMutexRetryDelayMilliseconds, remaining.TotalMilliseconds);
+                try
+                {
+                    hasLock = mutex.WaitOne(waitMilliseconds);
+                }
+                catch (AbandonedMutexException)
+                {
+                    hasLock = true;
+                }
+            }
+
+            var directory = Path.GetDirectoryName(logPath);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            using var stream = new FileStream(
+                logPath,
+                FileMode.Append,
+                FileAccess.Write,
+                FileShare.ReadWrite | FileShare.Delete);
+
+            var bytes = Encoding.UTF8.GetBytes(line + Environment.NewLine);
+            stream.Write(bytes, 0, bytes.Length);
+            stream.Flush();
+        }
+        finally
+        {
+                if (hasLock)
+                {
+                    try
+                    {
+                        mutex.ReleaseMutex();
+                    }
+                    catch (Exception releaseEx)
+                    {
+                        Trace.TraceError(releaseEx.ToString());
+                    }
+                    finally
+                    {
+                        mutex.Close();
+                    }
+            }
+        }
     }
 
     private static string SerializeJson(Action<Utf8JsonWriter> write)
