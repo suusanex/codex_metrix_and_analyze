@@ -1,0 +1,2 @@
+# codex_metrix_and_analyze
+Codexの動作について欲しいメトリクスを取得し、解析する。最初はフックのローカルファイル出力から始め、OpenTelemetryなどの仕組みまで強化していく想定。
