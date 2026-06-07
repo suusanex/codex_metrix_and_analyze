@@ -223,8 +223,8 @@ internal sealed class UsageOptions
 
         if (logPaths.Count == 0)
         {
-            var defaultLog = ResolveDefaultLogPath();
-            if (!string.IsNullOrWhiteSpace(defaultLog))
+            var defaultLogs = ResolveDefaultLogPaths();
+            foreach (var defaultLog in defaultLogs)
             {
                 logPaths.Add(defaultLog);
             }
@@ -263,7 +263,7 @@ Options:
   --log <path>                  Input JSONL log file (repeatable)
   --from <datetime>             Analyze from this datetime (ISO-8601). Omit for open start.
   --to <datetime>               Analyze until this datetime (ISO-8601). Omit for open end.
-  --timezone local|utc|Asia/Tokyo  Display timezone. Omit for local.
+  --timezone local|utc|Asia/Tokyo  Timeline bucket/display timezone. Omit for local.
   --bucket 5m|15m|30m|1h         Timeline bucket width.
   --session-id <id>             Filter by session_id.
   --cwd-contains <text>         Filter by cwd substring.
@@ -288,22 +288,71 @@ Options:
         };
     }
 
-    private static string ResolveDefaultLogPath()
+    private static IEnumerable<string> ResolveDefaultLogPaths()
     {
         var explicitHome = Environment.GetEnvironmentVariable("CODEX_AGENT_USAGE_LOG");
+        string basePath;
         if (!string.IsNullOrWhiteSpace(explicitHome))
         {
-            return explicitHome;
+            basePath = explicitHome;
         }
-
-        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        var home = Environment.GetEnvironmentVariable("CODEX_HOME");
-        if (string.IsNullOrWhiteSpace(home))
+        else
         {
-            home = Path.Combine(userProfile, ".codex");
+            var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            var home = Environment.GetEnvironmentVariable("CODEX_HOME");
+            if (string.IsNullOrWhiteSpace(home))
+            {
+                home = Path.Combine(userProfile, ".codex");
+            }
+
+            basePath = Path.Combine(home, "logs", "agent-usage.jsonl");
         }
 
-        return Path.Combine(home, "logs", "agent-usage.jsonl");
+        foreach (var candidate in ResolveDefaultLogPathCandidates(basePath))
+        {
+            yield return candidate;
+        }
+    }
+
+    private static IEnumerable<string> ResolveDefaultLogPathCandidates(string basePath)
+    {
+        var fullBasePath = Path.GetFullPath(basePath);
+        if (File.Exists(fullBasePath))
+        {
+            yield return fullBasePath;
+            yield break;
+        }
+
+        var directory = Path.GetDirectoryName(fullBasePath);
+        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
+        {
+            yield break;
+        }
+
+        var fileName = Path.GetFileNameWithoutExtension(fullBasePath);
+        var extension = Path.GetExtension(fullBasePath);
+        if (string.IsNullOrWhiteSpace(extension))
+        {
+            extension = ".jsonl";
+        }
+
+        var today = DateTimeOffset.Now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var todayPath = Path.Combine(directory, $"{fileName}-{today}{extension}");
+        if (File.Exists(todayPath))
+        {
+            yield return todayPath;
+            yield break;
+        }
+
+        var latest = Directory
+            .EnumerateFiles(directory, $"{fileName}-*{extension}")
+            .OrderByDescending(path => path, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault();
+
+        if (!string.IsNullOrWhiteSpace(latest))
+        {
+            yield return latest;
+        }
     }
 }
 
@@ -385,11 +434,11 @@ internal static class UsageReportGenerator
             var eventName = record.Event;
             eventCounts[eventName] = eventCounts.TryGetValue(eventName, out var eventCount) ? eventCount + 1 : 1;
 
-                if (record.AgentId is not null
-                    && record.AgentId.Equals("00000000-0000-0000-0000-000000000000", StringComparison.OrdinalIgnoreCase))
-                {
-                    record.AgentId = null;
-                }
+            if (record.AgentId is not null
+                && record.AgentId.Equals("00000000-0000-0000-0000-000000000000", StringComparison.OrdinalIgnoreCase))
+            {
+                record.AgentId = null;
+            }
 
             var model = record.Model ?? "(unknown)";
             var modelStat = modelStats.GetOrAdd(model);
@@ -657,14 +706,13 @@ internal static class UsageReportGenerator
         };
     }
 
-    private static List<(UsageRecord? record, ParseError? parseError)> ReadLogFile(string path)
+    private static IEnumerable<(UsageRecord? record, ParseError? parseError)> ReadLogFile(string path)
     {
         if (!File.Exists(path))
         {
             throw new FileNotFoundException("Log file does not exist", path);
         }
 
-        var rows = new List<(UsageRecord?, ParseError?)>();
         using var reader = new StreamReader(path, Encoding.UTF8);
         var lineNumber = 0;
 
@@ -682,30 +730,30 @@ internal static class UsageReportGenerator
                 continue;
             }
 
-            try
-            {
-                using var doc = JsonDocument.Parse(line);
-                var parsed = ParseRecord(doc.RootElement);
-                if (parsed is null)
-                {
-                    continue;
-                }
+            yield return ParseLine(line, path, lineNumber);
+        }
+    }
 
-                rows.Add((parsed, null));
-            }
-            catch (JsonException ex)
-            {
-                rows.Add((null, new ParseError
+    private static (UsageRecord?, ParseError?) ParseLine(string line, string path, int lineNumber)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(line);
+            var parsed = ParseRecord(doc.RootElement);
+            return parsed is null ? (null, null) : (parsed, null);
+        }
+        catch (JsonException ex)
+        {
+            return (
+                null,
+                new ParseError
                 {
                     SourcePath = path,
                     Line = lineNumber,
                     Message = ex.Message,
                     Exception = ex.ToString()
-                }));
-            }
+                });
         }
-
-        return rows;
     }
 
     private static UsageRecord? ParseRecord(JsonElement element)
@@ -755,7 +803,7 @@ internal static class UsageReportGenerator
     private static bool MatchesFilter(UsageRecord record, UsageOptions options)
     {
         if (!string.IsNullOrWhiteSpace(options.SessionIdFilter)
-            && !string.Equals(record.SessionId, options.SessionIdFilter, StringComparison.Ordinal))
+            && !string.Equals(record.SessionId, options.SessionIdFilter, StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
@@ -771,19 +819,15 @@ internal static class UsageReportGenerator
 
     private static DateTimeOffset FloorToBucket(DateTimeOffset value, TimeSpan bucket)
     {
-        var minutes = value.Minute;
-        var seconds = value.Second;
-        var totalMinutes = value.Hour * 60 + minutes;
-        var bucketMinutes = (int)bucket.TotalMinutes;
-        var flooredMinutes = (totalMinutes / bucketMinutes) * bucketMinutes;
-        var deltaMinutes = flooredMinutes - totalMinutes;
-        var floored = value
-            .AddHours(-value.Hour)
-            .AddMinutes(-value.Minute)
-            .AddSeconds(-value.Second)
-            .AddMilliseconds(-value.Millisecond)
-            .AddMinutes(deltaMinutes);
-        return floored;
+        var bucketTicks = bucket.Ticks;
+        if (bucketTicks <= 0)
+        {
+            return value;
+        }
+
+        var localDateTime = value.ToOffset(value.Offset).DateTime;
+        var flooredTicks = (localDateTime.Ticks / bucketTicks) * bucketTicks;
+        return new DateTimeOffset(new DateTime(flooredTicks, localDateTime.Kind), value.Offset);
     }
 
     private static TimeZoneInfo ResolveTimeZone(string value)
