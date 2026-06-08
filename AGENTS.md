@@ -43,3 +43,24 @@
 - Required output structure の項目名を維持する必要がある場合でも、本文・説明・表の Notes は日本語で書く。
 
 
+<!-- codex-first:start -->
+## Codex-first
+
+このリポジトリには Codex-first コスト意識ルーティングの導入手順を追加した。
+- 利用者は process 名・agent 名・model 名・full-coverage 分岐を選ぶ必要がない。
+- repo-local の AGENTS.md / 制約は引き続き最優先で読む。
+- `.agents/skills/codex-first-cost-router/SKILL.md` の振る舞いで source of truth、repo rules、既存 artifact、state artifact を確認する。
+- README の指示と `.codex/config.toml` / `.codex/agents/*.toml` / `.agents/skills/codex-first-cost-router/SKILL.md` / `templates/*.md` を使って `codex-first` 標準ルートを使う。
+- state artifact には Routing Plan、Edit Permission、Agent Usage Ledger、DelegationCompliance を記録する。
+- state artifact では execution_mode と、model tier / configured model / hook model / reported model / effective model を分けて記録する。
+- READY 後の通常実装は `standard-implementer`、通常 verification は `standard-verifier` へ serial delegation する。
+- `DelegationRequired = Yes` の gate は observed run または explicit human approval 付き `ParentDirectExecutionException` がない限り成功扱いしない。
+- 親が委譲予定の作業を直接実行した場合、cost-saving delegation 成功として扱わない。
+- write-heavy parallel editing を標準化しないことは、親が直接実装してよいことを意味しない。
+
+`codex-first-start.ps1` は起動時のみ CODEX_HOME を切り替える一時 launcher なので、
+リポジトリごとの標準利用では、本インストーラで `.codex` と `AGENTS.md` を揃える。
+
+参考: D:\Data\git\coding_agent_plan_and_verify_process\apm-packages\codex-first-ai-development-process\scripts\codex-first-start.ps1
+
+<!-- codex-first:end -->

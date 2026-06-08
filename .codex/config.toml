@@ -1,0 +1,9 @@
+# Codex-first profile defaults.
+# Copy this directory to a CODEX_HOME location or launch with scripts/codex-first-start.ps1.
+
+model = "gpt-5.5"
+model_reasoning_effort = "medium"
+
+[agents]
+max_threads = 3
+max_depth = 1
