@@ -34,6 +34,30 @@ Codexの動作について欲しいメトリクスを取得し、解析する。
 - `tool_response_size` / `tool_response_preview`: tool response の JSON 文字列長と先頭 500 文字。
 - `raw_payload_keys`: 受け取った payload の top-level key 一覧。
 
+## フックのインストール
+
+フック本体の導入・確認・削除を行うスクリプトは次の通り。
+
+- `scripts/apply-hooks-config.cs`
+  - `~/.codex/hooks.json` を生成
+  - `~/.codex/hooks/codex-agent-usage-logger.exe` を NativeAOT publish して配置
+  - 作業内容を `~/.codex/codex-metrix-and-analyze.manifest.json` に記録
+- `scripts/remove-hooks-config.cs`
+  - `~/.codex/codex-metrix-and-analyze.manifest.json`（優先）と `~/.codex/codex-local-config.manifest.json`（後方互換）を参照してアンインストール
+  - バックアップがあれば復元、なければ導入時 hash が一致した場合のみ削除
+- `scripts/test-hook.cs`
+  - 一時 `CODEX_HOME` でインストール・実行・ログ確認までの smoke test を実施
+
+```powershell
+dotnet run --file scripts\apply-hooks-config.cs -- --dry-run
+dotnet run --file scripts\apply-hooks-config.cs -- --force
+dotnet run --file scripts\test-hook.cs
+dotnet run --file scripts\remove-hooks-config.cs -- --dry-run
+dotnet run --file scripts\remove-hooks-config.cs
+```
+
+インストール時は `--force` で既存ファイル上書き、`--backup-dir` でバックアップ先を指定できる。
+
 ## Codex agent usage report
 
 `scripts/codex-agent-usage-report.cs` は、`hooks/codex-agent-usage-logger.cs` が出力した JSONL ログを読み取り、Markdown または JSON の利用状況レポートを生成する File-based apps 形式の C# スクリプト。
