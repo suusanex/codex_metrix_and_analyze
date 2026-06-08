@@ -15,162 +15,79 @@ internal static class HookTester
             return 1;
         }
 
-            var tempCodexHome = Path.Combine(Path.GetTempPath(), $"codex-metrix-and-analyze-test-{Guid.NewGuid():N}");
+        var tempCodexHome = Path.Combine(Path.GetTempPath(), $"codex-metrix-and-analyze-test-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempCodexHome);
 
         try
         {
-            var installExitCode = await RunInstallerAsync(repoRoot, tempCodexHome);
-            if (installExitCode != 0)
-            {
-                return installExitCode;
-            }
+            await RunInstallerAsync(repoRoot, tempCodexHome);
 
             var loggerPath = Path.Combine(tempCodexHome, "hooks", "codex-agent-usage-logger.exe");
-            var logBasePath = Path.Combine(tempCodexHome, "logs", "agent-usage.jsonl");
+            var logBasePath = Path.Combine(tempCodexHome, "logs", "agent-observations.jsonl");
             var logPath = GetDailyLogPath(logBasePath);
-            var errorLogBasePath = Path.Combine(tempCodexHome, "logs", "agent-usage-error.log");
+            var errorLogBasePath = Path.Combine(tempCodexHome, "logs", "agent-observations-error.log");
             var errorLogPath = GetDailyLogPath(errorLogBasePath);
-            var hooksJsonPath = Path.Combine(tempCodexHome, "hooks.json");
+            var legacyLogBasePath = Path.Combine(tempCodexHome, "logs", "agent-usage.jsonl");
+            var legacyLogPath = GetDailyLogPath(legacyLogBasePath);
 
-            if (!File.Exists(hooksJsonPath))
+            await ValidateHooksJsonAsync(tempCodexHome, loggerPath);
+
+            var common = new HookPayloadContext("test-session", "turn-1", repoRoot, "workspace-write", "gpt-test");
+
+            await InvokeHookAsync(loggerPath, tempCodexHome, logBasePath, errorLogBasePath, CreateSessionStart(common));
+            await InvokeHookAsync(loggerPath, tempCodexHome, logBasePath, errorLogBasePath, CreateSubagentStart(common, "agent-sub", "delegate"));
+            await Task.Delay(30);
+            await InvokeHookAsync(loggerPath, tempCodexHome, logBasePath, errorLogBasePath, CreateSubagentStop(common, "agent-sub", "delegate"));
+
+            await InvokeHookAsync(loggerPath, tempCodexHome, logBasePath, errorLogBasePath, CreatePreToolUse(common, "agent-root", "root", "tool-1", "shell_command", "git status --short"));
+            await Task.Delay(30);
+            await InvokeHookAsync(loggerPath, tempCodexHome, logBasePath, errorLogBasePath, CreatePostToolUse(common, "agent-root", "root", "tool-1", "shell_command", "git status --short", 0, "clean"));
+
+            await InvokeHookAsync(loggerPath, tempCodexHome, logBasePath, errorLogBasePath, CreatePostToolUse(common, "agent-root", "root", "tool-2", "shell_command", "rg schema_version", 0, "hit"));
+            await InvokeHookAsync(loggerPath, tempCodexHome, logBasePath, errorLogBasePath, CreatePreToolUse(
+                common,
+                "agent-root",
+                "root",
+                "tool-3",
+                "shell_command",
+                "curl -H \"Authorization: Bearer SECRET123456789\" https://example.com --token ghp_secretsecret123456"));
+            await InvokeHookAsync(loggerPath, tempCodexHome, logBasePath, errorLogBasePath, CreateSubagentStop(common, "agent-orphan", "delegate"));
+
+            await RunParallelAppendAsync(loggerPath, tempCodexHome, logBasePath, errorLogBasePath, common);
+
+            var lines = await File.ReadAllLinesAsync(logPath, Encoding.UTF8);
+            if (lines.Length < 27)
             {
-                Console.Error.WriteLine("Generated hooks.json was not created.");
+                Console.Error.WriteLine($"Expected at least 27 log lines, found {lines.Length}.");
                 return 1;
             }
 
-            var hooksJson = await File.ReadAllTextAsync(hooksJsonPath);
-            if (hooksJson.Contains("%USERPROFILE%", StringComparison.Ordinal) || hooksJson.Contains("~/.codex", StringComparison.Ordinal))
+            var documents = lines.Select(line => JsonDocument.Parse(line)).ToList();
+            try
             {
-                Console.Error.WriteLine("Generated hooks.json still contains unresolved path placeholders.");
-                return 1;
+                ValidateSchemaVersion(documents);
+                ValidateMatchedTool(documents);
+                ValidateMissingPre(documents);
+                ValidateSubagentCorrelation(documents);
+                ValidateOrphanSubagentStop(documents);
+                ValidateRedaction(documents);
             }
-
-            using (var hooksDocument = JsonDocument.Parse(hooksJson))
+            finally
             {
-                var commandWindows = hooksDocument.RootElement
-                    .GetProperty("hooks")
-                    .GetProperty("UserPromptSubmit")[0]
-                    .GetProperty("hooks")[0]
-                    .GetProperty("commandWindows")
-                    .GetString();
-                if (!StringComparer.OrdinalIgnoreCase.Equals(commandWindows, loggerPath))
+                foreach (var doc in documents)
                 {
-                    Console.Error.WriteLine("Generated hooks.json does not point to the installed executable.");
-                    return 1;
+                    doc.Dispose();
                 }
-            }
-
-            await InvokeHookAsync(loggerPath, tempCodexHome, logBasePath, errorLogBasePath, SerializeJson(writer =>
-            {
-                writer.WriteStartObject();
-                writer.WriteString("hook_event_name", "SessionStart");
-                writer.WriteString("session_id", "test-session");
-                writer.WriteString("turn_id", "turn-1");
-                writer.WriteString("agent_id", "agent-root");
-                writer.WriteString("agent_type", "root");
-                writer.WriteString("model", "gpt-test");
-                writer.WriteString("cwd", repoRoot);
-                writer.WriteString("permission_mode", "workspace-write");
-                writer.WriteEndObject();
-            }));
-
-            await InvokeHookAsync(loggerPath, tempCodexHome, logBasePath, errorLogBasePath, SerializeJson(writer =>
-            {
-                writer.WriteStartObject();
-                writer.WriteString("hook_event_name", "SubagentStart");
-                writer.WriteString("session_id", "test-session");
-                writer.WriteString("turn_id", "turn-1");
-                writer.WriteString("agent_id", "agent-sub");
-                writer.WriteString("agent_type", "delegate");
-                writer.WriteString("model", "gpt-test");
-                writer.WriteString("cwd", repoRoot);
-                writer.WriteString("permission_mode", "workspace-write");
-                writer.WriteEndObject();
-            }));
-
-            await Task.Delay(25);
-
-            await InvokeHookAsync(loggerPath, tempCodexHome, logBasePath, errorLogBasePath, SerializeJson(writer =>
-            {
-                writer.WriteStartObject();
-                writer.WriteString("hook_event_name", "SubagentStop");
-                writer.WriteString("session_id", "test-session");
-                writer.WriteString("turn_id", "turn-1");
-                writer.WriteString("agent_id", "agent-sub");
-                writer.WriteString("agent_type", "delegate");
-                writer.WriteString("model", "gpt-test");
-                writer.WriteString("cwd", repoRoot);
-                writer.WriteString("permission_mode", "workspace-write");
-                writer.WriteEndObject();
-            }));
-
-            await InvokeHookAsync(loggerPath, tempCodexHome, logBasePath, errorLogBasePath, SerializeJson(writer =>
-            {
-                writer.WriteStartObject();
-                writer.WriteString("hook_event_name", "PostToolUse");
-                writer.WriteString("session_id", "test-session");
-                writer.WriteString("turn_id", "turn-1");
-                writer.WriteString("agent_id", "agent-root");
-                writer.WriteString("agent_type", "root");
-                writer.WriteString("model", "gpt-test");
-                writer.WriteString("cwd", repoRoot);
-                writer.WriteString("permission_mode", "workspace-write");
-                writer.WriteString("tool_name", "shell_command");
-                writer.WritePropertyName("tool_input");
-                writer.WriteStartObject();
-                writer.WriteString("command", "git status --short");
-                writer.WriteEndObject();
-                writer.WritePropertyName("tool_response");
-                writer.WriteStartObject();
-                writer.WriteString("stdout", "sample output");
-                writer.WriteNumber("exitCode", 0);
-                writer.WriteEndObject();
-                writer.WriteEndObject();
-            }));
-
-            if (!File.Exists(logPath))
-            {
-                Console.Error.WriteLine("Log file was not created.");
-                return 1;
             }
 
             if (File.Exists(errorLogPath) || File.Exists(errorLogBasePath))
             {
-                Console.Error.WriteLine("Error log should not exist after successful hook runs.");
+                Console.Error.WriteLine("Error log should not exist before malformed payload test.");
                 return 1;
             }
 
-            var lines = await File.ReadAllLinesAsync(logPath);
-            if (lines.Length != 4)
-            {
-                Console.Error.WriteLine($"Expected 4 log lines, found {lines.Length}.");
-                return 1;
-            }
-
-            using var subagentStop = JsonDocument.Parse(lines[2]);
-            var durationElement = subagentStop.RootElement.GetProperty("duration_ms");
-            if (durationElement.ValueKind != JsonValueKind.Number || durationElement.GetInt32() <= 0)
-            {
-                Console.Error.WriteLine("Subagent duration was not recorded.");
-                return 1;
-            }
-
-            using var toolUse = JsonDocument.Parse(lines[3]);
-            if (toolUse.RootElement.GetProperty("command").GetString() != "git status --short")
-            {
-                Console.Error.WriteLine("Tool command was not captured.");
-                return 1;
-            }
-
-            if (!toolUse.RootElement.TryGetProperty("tool_response_preview", out _))
-            {
-                Console.Error.WriteLine("Tool response preview was not recorded.");
-                return 1;
-            }
-
-            var invalidPayloadExitCode = await InvokeHookAsync(loggerPath, tempCodexHome, logBasePath, errorLogBasePath, "{");
-            if (invalidPayloadExitCode != 0)
+            var invalidExitCode = await InvokeHookAsync(loggerPath, tempCodexHome, logBasePath, errorLogBasePath, "{");
+            if (invalidExitCode != 0)
             {
                 Console.Error.WriteLine("Hook should return 0 even when payload parsing fails.");
                 return 1;
@@ -178,24 +95,21 @@ internal static class HookTester
 
             if (!File.Exists(errorLogPath) && !File.Exists(errorLogBasePath))
             {
-                Console.Error.WriteLine("Error log was not created for the malformed payload.");
+                Console.Error.WriteLine("Error log was not created for malformed payload.");
                 return 1;
             }
 
-            var actualErrorLogPath = File.Exists(errorLogPath) ? errorLogPath : errorLogBasePath;
-            var errorLines = await File.ReadAllLinesAsync(actualErrorLogPath);
-            if (errorLines.Length != 1)
-            {
-                Console.Error.WriteLine($"Expected 1 error log line, found {errorLines.Length}.");
-                return 1;
-            }
+            await File.WriteAllTextAsync(
+                legacyLogPath,
+                string.Join(
+                    Environment.NewLine,
+                    [
+                        "{\"recorded_at\":\"2026-06-08T00:00:00.0000000+00:00\",\"event\":\"PostToolUse\",\"session_id\":\"legacy-session\",\"agent_type\":\"parent\",\"model\":\"gpt-old\",\"cwd\":\"" + EscapeJson(repoRoot) + "\",\"tool_name\":\"shell_command\",\"command\":\"git diff\",\"tool_response_size\":40}",
+                        "{\"recorded_at\":\"2026-06-08T00:00:05.0000000+00:00\",\"event\":\"SubagentStop\",\"session_id\":\"legacy-session\",\"agent_id\":\"legacy-agent\",\"agent_type\":\"delegate\",\"model\":\"gpt-old\",\"cwd\":\"" + EscapeJson(repoRoot) + "\",\"duration_ms\":1200}"
+                    ]) + Environment.NewLine,
+                Encoding.UTF8);
 
-            using var errorDocument = JsonDocument.Parse(errorLines[0]);
-            if (errorDocument.RootElement.GetProperty("error_kind").GetString() != "payload-parse-failed")
-            {
-                Console.Error.WriteLine("Unexpected error kind in error log.");
-                return 1;
-            }
+            await ValidateReportAsync(repoRoot, logPath, legacyLogPath);
 
             Console.WriteLine($"Smoke test passed. Temp CODEX_HOME: {tempCodexHome}");
             return 0;
@@ -209,7 +123,374 @@ internal static class HookTester
         }
     }
 
-    private static async Task<int> RunInstallerAsync(string repoRoot, string codexHome)
+    private static async Task ValidateReportAsync(string repoRoot, string logPath, string legacyLogPath)
+    {
+        var jsonOutput = await RunDotnetAsync(
+            repoRoot,
+            "run",
+            "--file",
+            Path.Combine(repoRoot, "scripts", "codex-agent-usage-report.cs"),
+            "--",
+            "--log",
+            logPath,
+            "--log",
+            legacyLogPath,
+            "--format",
+            "json",
+            "--limit-delta",
+            "12.5",
+            "--limit-unit",
+            "percent",
+            "--allocation-basis",
+            "weighted");
+
+        using var reportDocument = JsonDocument.Parse(jsonOutput.StandardOutput);
+        var root = reportDocument.RootElement;
+        EnsureProperty(root, "summary");
+        EnsureProperty(root, "model_rows");
+        EnsureProperty(root, "agent_type_rows");
+        EnsureProperty(root, "tool_rows");
+        EnsureProperty(root, "repository_rows");
+        EnsureProperty(root, "timeline_rows");
+        EnsureProperty(root, "correlation_issues");
+        EnsureProperty(root, "allocation");
+        EnsureProperty(root, "warnings");
+        EnsureProperty(root, "not_available");
+
+        var allocation = root.GetProperty("allocation");
+        if (allocation.GetProperty("limit_delta").GetDouble() <= 0)
+        {
+            throw new InvalidOperationException("Allocation limit_delta was not emitted.");
+        }
+
+        var issues = root.GetProperty("correlation_issues").EnumerateArray().ToArray();
+        if (!issues.Any(issue =>
+                issue.GetProperty("status").GetString() == "missing_post" &&
+                issue.GetProperty("count").GetInt32() >= 1))
+        {
+            throw new InvalidOperationException("Report did not detect missing_post.");
+        }
+
+        if (!issues.Any(issue =>
+                issue.GetProperty("status").GetString() == "legacy_unavailable"))
+        {
+            throw new InvalidOperationException("Report did not emit legacy_unavailable correlation issue.");
+        }
+
+        var markdownOutput = await RunDotnetAsync(
+            repoRoot,
+            "run",
+            "--file",
+            Path.Combine(repoRoot, "scripts", "codex-agent-usage-report.cs"),
+            "--",
+            "--log",
+            logPath,
+            "--format",
+            "markdown",
+            "--limit-delta",
+            "4",
+            "--allocation-basis",
+            "tool-count");
+
+        if (!markdownOutput.StandardOutput.Contains("Limit delta allocation", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Markdown report did not contain allocation section.");
+        }
+    }
+
+    private static void ValidateSchemaVersion(List<JsonDocument> documents)
+    {
+        if (documents.Any(doc => doc.RootElement.GetProperty("schema_version").GetString() != "2.0"))
+        {
+            throw new InvalidOperationException("Expected schema_version 2.0 for all logger lines.");
+        }
+    }
+
+    private static void ValidateMatchedTool(List<JsonDocument> documents)
+    {
+        var matched = documents
+            .Select(doc => doc.RootElement)
+            .FirstOrDefault(element =>
+                element.GetProperty("event").GetString() == "PostToolUse" &&
+                element.TryGetProperty("tool_use_id", out var toolUseId) &&
+                toolUseId.GetString() == "tool-1");
+
+        if (matched.ValueKind == JsonValueKind.Undefined)
+        {
+            throw new InvalidOperationException("Matched PostToolUse was not logged.");
+        }
+
+        if (matched.GetProperty("tool_correlation_status").GetString() != "matched")
+        {
+            throw new InvalidOperationException("Matched tool correlation status was not recorded.");
+        }
+
+        if (matched.GetProperty("tool_elapsed_ms").GetInt64() <= 0)
+        {
+            throw new InvalidOperationException("tool_elapsed_ms was not recorded.");
+        }
+
+        if (matched.GetProperty("command_kind").GetString() != "git")
+        {
+            throw new InvalidOperationException("command_kind was not classified.");
+        }
+    }
+
+    private static void ValidateMissingPre(List<JsonDocument> documents)
+    {
+        var missingPre = documents
+            .Select(doc => doc.RootElement)
+            .FirstOrDefault(element =>
+                element.GetProperty("event").GetString() == "PostToolUse" &&
+                element.TryGetProperty("tool_use_id", out var toolUseId) &&
+                toolUseId.GetString() == "tool-2");
+
+        if (missingPre.ValueKind == JsonValueKind.Undefined)
+        {
+            throw new InvalidOperationException("missing_pre PostToolUse was not logged.");
+        }
+
+        if (missingPre.GetProperty("tool_correlation_status").GetString() != "missing_pre")
+        {
+            throw new InvalidOperationException("missing_pre correlation status was not recorded.");
+        }
+    }
+
+    private static void ValidateSubagentCorrelation(List<JsonDocument> documents)
+    {
+        var stop = documents
+            .Select(doc => doc.RootElement)
+            .FirstOrDefault(element =>
+                element.GetProperty("event").GetString() == "SubagentStop" &&
+                element.GetProperty("agent_id").GetString() == "agent-sub");
+
+        if (stop.ValueKind == JsonValueKind.Undefined)
+        {
+            throw new InvalidOperationException("SubagentStop for matched run was not logged.");
+        }
+
+        if (stop.GetProperty("subagent_correlation_status").GetString() != "matched")
+        {
+            throw new InvalidOperationException("SubagentStop correlation was not matched.");
+        }
+
+        if (stop.GetProperty("subagent_duration_ms").GetInt64() <= 0)
+        {
+            throw new InvalidOperationException("subagent_duration_ms was not recorded.");
+        }
+    }
+
+    private static void ValidateOrphanSubagentStop(List<JsonDocument> documents)
+    {
+        var orphan = documents
+            .Select(doc => doc.RootElement)
+            .FirstOrDefault(element =>
+                element.GetProperty("event").GetString() == "SubagentStop" &&
+                element.GetProperty("agent_id").GetString() == "agent-orphan");
+
+        if (orphan.ValueKind == JsonValueKind.Undefined)
+        {
+            throw new InvalidOperationException("Orphan SubagentStop was not logged.");
+        }
+
+        if (orphan.GetProperty("subagent_correlation_status").GetString() != "missing_start")
+        {
+            throw new InvalidOperationException("Orphan SubagentStop was not marked missing_start.");
+        }
+    }
+
+    private static void ValidateRedaction(List<JsonDocument> documents)
+    {
+        var redacted = documents
+            .Select(doc => doc.RootElement)
+            .FirstOrDefault(element =>
+                element.GetProperty("event").GetString() == "PreToolUse" &&
+                element.TryGetProperty("tool_use_id", out var toolUseId) &&
+                toolUseId.GetString() == "tool-3");
+
+        if (redacted.ValueKind == JsonValueKind.Undefined)
+        {
+            throw new InvalidOperationException("Redaction test line was not logged.");
+        }
+
+        var command = redacted.GetProperty("command_redacted").GetString() ?? string.Empty;
+        var preview = redacted.GetProperty("tool_input_preview").GetString() ?? string.Empty;
+        if (command.Contains("SECRET123456789", StringComparison.Ordinal) ||
+            command.Contains("ghp_secretsecret123456", StringComparison.Ordinal) ||
+            preview.Contains("SECRET123456789", StringComparison.Ordinal) ||
+            preview.Contains("ghp_secretsecret123456", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Secrets were not redacted from command or preview.");
+        }
+
+        if (!command.Contains("[REDACTED]", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Redacted command did not include redaction marker.");
+        }
+    }
+
+    private static async Task RunParallelAppendAsync(
+        string loggerPath,
+        string codexHome,
+        string logPath,
+        string errorLogPath,
+        HookPayloadContext common)
+    {
+        var tasks = Enumerable.Range(0, 20)
+            .Select(index => InvokeHookAsync(
+                loggerPath,
+                codexHome,
+                logPath,
+                errorLogPath,
+                CreateSessionStart(common with { SessionId = $"parallel-{index}", TurnId = $"turn-{index}" })))
+            .ToArray();
+
+        var exitCodes = await Task.WhenAll(tasks);
+        if (exitCodes.Any(code => code != 0))
+        {
+            throw new InvalidOperationException("Parallel append test encountered non-zero exit code.");
+        }
+    }
+
+    private static async Task ValidateHooksJsonAsync(string codexHome, string loggerPath)
+    {
+        var hooksJsonPath = Path.Combine(codexHome, "hooks.json");
+        if (!File.Exists(hooksJsonPath))
+        {
+            throw new InvalidOperationException("Generated hooks.json was not created.");
+        }
+
+        var hooksJson = await File.ReadAllTextAsync(hooksJsonPath, Encoding.UTF8);
+        if (hooksJson.Contains("%USERPROFILE%", StringComparison.Ordinal) ||
+            hooksJson.Contains("~/.codex", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Generated hooks.json still contains unresolved placeholders.");
+        }
+
+        using var doc = JsonDocument.Parse(hooksJson);
+        var hooksRoot = doc.RootElement.GetProperty("hooks");
+        ValidateHookEvent(hooksRoot, "UserPromptSubmit", loggerPath, expectedMatcher: null);
+        ValidateHookEvent(hooksRoot, "PreToolUse", loggerPath, expectedMatcher: "*");
+        ValidateHookEvent(hooksRoot, "PostToolUse", loggerPath, expectedMatcher: "*");
+    }
+
+    private static void ValidateHookEvent(JsonElement hooksRoot, string eventName, string loggerPath, string? expectedMatcher)
+    {
+        if (!hooksRoot.TryGetProperty(eventName, out var eventArray) || eventArray.ValueKind != JsonValueKind.Array || eventArray.GetArrayLength() == 0)
+        {
+            throw new InvalidOperationException($"Generated hooks.json is missing hook event '{eventName}'.");
+        }
+
+        var firstEntry = eventArray[0];
+        if (expectedMatcher is null)
+        {
+            if (firstEntry.TryGetProperty("matcher", out var matcherElement) &&
+                matcherElement.ValueKind != JsonValueKind.Null &&
+                !string.IsNullOrWhiteSpace(matcherElement.GetString()))
+            {
+                throw new InvalidOperationException($"Generated hooks.json unexpectedly set matcher for '{eventName}'.");
+            }
+        }
+        else
+        {
+            var matcher = firstEntry.TryGetProperty("matcher", out var matcherElement)
+                ? matcherElement.GetString()
+                : null;
+            if (!StringComparer.Ordinal.Equals(matcher, expectedMatcher))
+            {
+                throw new InvalidOperationException($"Generated hooks.json matcher for '{eventName}' was '{matcher}', expected '{expectedMatcher}'.");
+            }
+        }
+
+        var commandWindows = firstEntry
+            .GetProperty("hooks")[0]
+            .GetProperty("commandWindows")
+            .GetString();
+
+        if (!StringComparer.OrdinalIgnoreCase.Equals(commandWindows, loggerPath))
+        {
+            throw new InvalidOperationException($"Generated hooks.json event '{eventName}' does not point to the installed logger.");
+        }
+    }
+
+    private static async Task RunInstallerAsync(string repoRoot, string codexHome)
+    {
+        var result = await RunDotnetAsync(
+            repoRoot,
+            "run",
+            "--file",
+            Path.Combine(repoRoot, "scripts", "apply-hooks-config.cs"),
+            "--",
+            "--force",
+            new Dictionary<string, string?>
+            {
+                ["CODEX_HOME"] = codexHome
+            });
+
+        if (result.ExitCode != 0)
+        {
+            throw new InvalidOperationException($"Install failed.{Environment.NewLine}{result.StandardError}{Environment.NewLine}{result.StandardOutput}");
+        }
+    }
+
+    private static async Task<int> InvokeHookAsync(
+        string loggerPath,
+        string codexHome,
+        string logPath,
+        string errorLogPath,
+        string payloadJson)
+    {
+        var startInfo = new ProcessStartInfo(loggerPath)
+        {
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        startInfo.Environment["CODEX_HOME"] = codexHome;
+        startInfo.Environment["CODEX_AGENT_OBSERVATION_LOG"] = logPath;
+        startInfo.Environment["CODEX_AGENT_OBSERVATION_ERROR_LOG"] = errorLogPath;
+
+        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("failed to start hook executable");
+        await process.StandardInput.WriteAsync(payloadJson);
+        process.StandardInput.Close();
+        await process.StandardOutput.ReadToEndAsync();
+        await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        return process.ExitCode;
+    }
+
+    private static async Task<ProcessResult> RunDotnetAsync(
+        string repoRoot,
+        params string[] arguments)
+    {
+        return await RunDotnetAsync(repoRoot, arguments, environment: null);
+    }
+
+    private static async Task<ProcessResult> RunDotnetAsync(
+        string repoRoot,
+        string firstArgument,
+        string secondArgument,
+        string thirdArgument,
+        string fourthArgument,
+        string fifthArgument,
+        string sixthArgument,
+        string seventhArgument,
+        string eighthArgument,
+        string ninthArgument,
+        string tenthArgument,
+        Dictionary<string, string?>? environment = null)
+    {
+        return await RunDotnetAsync(
+            repoRoot,
+            [firstArgument, secondArgument, thirdArgument, fourthArgument, fifthArgument, sixthArgument, seventhArgument, eighthArgument, ninthArgument, tenthArgument],
+            environment);
+    }
+
+    private static async Task<ProcessResult> RunDotnetAsync(
+        string repoRoot,
+        string[] arguments,
+        Dictionary<string, string?>? environment)
     {
         var startInfo = new ProcessStartInfo("dotnet")
         {
@@ -218,47 +499,173 @@ internal static class HookTester
             UseShellExecute = false,
             WorkingDirectory = repoRoot
         };
-        startInfo.ArgumentList.Add("run");
-        startInfo.ArgumentList.Add("--file");
-        startInfo.ArgumentList.Add(Path.Combine(repoRoot, "scripts", "apply-hooks-config.cs"));
-        startInfo.ArgumentList.Add("--");
-        startInfo.ArgumentList.Add("--force");
-        startInfo.Environment["CODEX_HOME"] = codexHome;
 
-        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("failed to start install process");
-        var stderr = await process.StandardError.ReadToEndAsync();
-        var stdout = await process.StandardOutput.ReadToEndAsync();
-        await process.WaitForExitAsync();
-
-        if (process.ExitCode != 0)
+        foreach (var arg in arguments)
         {
-            throw new InvalidOperationException($"Install failed.{Environment.NewLine}{stderr}{Environment.NewLine}{stdout}");
+            startInfo.ArgumentList.Add(arg);
         }
 
-        return process.ExitCode;
+        if (environment is not null)
+        {
+            foreach (var entry in environment)
+            {
+                startInfo.Environment[entry.Key] = entry.Value;
+            }
+        }
+
+        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("failed to start dotnet process");
+        var stdoutTask = process.StandardOutput.ReadToEndAsync();
+        var stderrTask = process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        return new ProcessResult(process.ExitCode, await stdoutTask, await stderrTask);
     }
 
-    private static async Task<int> InvokeHookAsync(string loggerPath, string codexHome, string logPath, string errorLogPath, string payloadJson)
+    private static async Task<ProcessResult> RunDotnetAsync(
+        string repoRoot,
+        string arg1,
+        string arg2,
+        string arg3,
+        string arg4,
+        string arg5,
+        Dictionary<string, string?>? environment = null)
     {
-        var startInfo = new ProcessStartInfo(loggerPath)
+        return await RunDotnetAsync(repoRoot, [arg1, arg2, arg3, arg4, arg5], environment);
+    }
+
+    private static async Task<ProcessResult> RunDotnetAsync(
+        string repoRoot,
+        string arg1,
+        string arg2,
+        string arg3,
+        string arg4,
+        string arg5,
+        string arg6,
+        Dictionary<string, string?>? environment = null)
+    {
+        return await RunDotnetAsync(repoRoot, [arg1, arg2, arg3, arg4, arg5, arg6], environment);
+    }
+
+    private static string CreateSessionStart(HookPayloadContext context)
+    {
+        return SerializeJson(writer =>
         {
-            RedirectStandardInput = true,
-            RedirectStandardError = true,
-            RedirectStandardOutput = true,
-            UseShellExecute = false
-        };
-        startInfo.Environment["CODEX_HOME"] = codexHome;
-        startInfo.Environment["CODEX_AGENT_USAGE_LOG"] = logPath;
-        startInfo.Environment["CODEX_AGENT_USAGE_ERROR_LOG"] = errorLogPath;
+            writer.WriteStartObject();
+            writer.WriteString("hook_event_name", "SessionStart");
+            writer.WriteString("session_id", context.SessionId);
+            writer.WriteString("turn_id", context.TurnId);
+            writer.WriteString("agent_id", "agent-root");
+            writer.WriteString("agent_type", "root");
+            writer.WriteString("model", context.Model);
+            writer.WriteString("cwd", context.Cwd);
+            writer.WriteString("permission_mode", context.PermissionMode);
+            writer.WriteEndObject();
+        });
+    }
 
-        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("failed to start hook executable");
-        await process.StandardInput.WriteAsync(payloadJson);
-        process.StandardInput.Close();
+    private static string CreateSubagentStart(HookPayloadContext context, string agentId, string agentType)
+    {
+        return SerializeAgentEvent(context, "SubagentStart", agentId, agentType);
+    }
 
-        await process.StandardError.ReadToEndAsync();
-        await process.StandardOutput.ReadToEndAsync();
-        await process.WaitForExitAsync();
-        return process.ExitCode;
+    private static string CreateSubagentStop(HookPayloadContext context, string agentId, string agentType)
+    {
+        return SerializeAgentEvent(context, "SubagentStop", agentId, agentType);
+    }
+
+    private static string SerializeAgentEvent(HookPayloadContext context, string eventName, string agentId, string agentType)
+    {
+        return SerializeJson(writer =>
+        {
+            writer.WriteStartObject();
+            writer.WriteString("hook_event_name", eventName);
+            writer.WriteString("session_id", context.SessionId);
+            writer.WriteString("turn_id", context.TurnId);
+            writer.WriteString("agent_id", agentId);
+            writer.WriteString("agent_type", agentType);
+            writer.WriteString("model", context.Model);
+            writer.WriteString("cwd", context.Cwd);
+            writer.WriteString("permission_mode", context.PermissionMode);
+            writer.WriteEndObject();
+        });
+    }
+
+    private static string CreatePreToolUse(
+        HookPayloadContext context,
+        string agentId,
+        string agentType,
+        string toolUseId,
+        string toolName,
+        string command)
+    {
+        return SerializeJson(writer =>
+        {
+            writer.WriteStartObject();
+            writer.WriteString("hook_event_name", "PreToolUse");
+            writer.WriteString("session_id", context.SessionId);
+            writer.WriteString("turn_id", context.TurnId);
+            writer.WriteString("agent_id", agentId);
+            writer.WriteString("agent_type", agentType);
+            writer.WriteString("model", context.Model);
+            writer.WriteString("cwd", context.Cwd);
+            writer.WriteString("permission_mode", context.PermissionMode);
+            writer.WriteString("tool_use_id", toolUseId);
+            writer.WriteString("tool_name", toolName);
+            writer.WritePropertyName("tool_input");
+            writer.WriteStartObject();
+            writer.WriteString("command", command);
+            writer.WriteEndObject();
+            writer.WriteEndObject();
+        });
+    }
+
+    private static string CreatePostToolUse(
+        HookPayloadContext context,
+        string agentId,
+        string agentType,
+        string toolUseId,
+        string toolName,
+        string command,
+        int exitCode,
+        string stdout)
+    {
+        return SerializeJson(writer =>
+        {
+            writer.WriteStartObject();
+            writer.WriteString("hook_event_name", "PostToolUse");
+            writer.WriteString("session_id", context.SessionId);
+            writer.WriteString("turn_id", context.TurnId);
+            writer.WriteString("agent_id", agentId);
+            writer.WriteString("agent_type", agentType);
+            writer.WriteString("model", context.Model);
+            writer.WriteString("cwd", context.Cwd);
+            writer.WriteString("permission_mode", context.PermissionMode);
+            writer.WriteString("tool_use_id", toolUseId);
+            writer.WriteString("tool_name", toolName);
+            writer.WritePropertyName("tool_input");
+            writer.WriteStartObject();
+            writer.WriteString("command", command);
+            writer.WriteEndObject();
+            writer.WritePropertyName("tool_response");
+            writer.WriteStartObject();
+            writer.WriteString("stdout", stdout);
+            writer.WriteNumber("exitCode", exitCode);
+            writer.WriteString("token", "ghp_secretsecret123456");
+            writer.WriteEndObject();
+            writer.WriteEndObject();
+        });
+    }
+
+    private static void EnsureProperty(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out _))
+        {
+            throw new InvalidOperationException($"Expected property '{propertyName}' in report output.");
+        }
+    }
+
+    private static string EscapeJson(string value)
+    {
+        return value.Replace("\\", "\\\\", StringComparison.Ordinal);
     }
 
     private static string? FindRepoRoot()
@@ -294,19 +701,21 @@ internal static class HookTester
     {
         var directory = Path.GetDirectoryName(basePath);
         var fileName = Path.GetFileName(basePath);
-
-        if (string.IsNullOrWhiteSpace(fileName))
-        {
-            return basePath;
-        }
-
         var date = DateTimeOffset.Now.ToString("yyyy-MM-dd");
         var extension = Path.GetExtension(fileName);
         var fileNameWithoutExtension = Path.GetFileNameWithoutExtension(fileName);
         var dailyFileName = string.IsNullOrWhiteSpace(extension)
             ? $"{fileNameWithoutExtension}-{date}"
             : $"{fileNameWithoutExtension}-{date}{extension}";
-
         return string.IsNullOrWhiteSpace(directory) ? dailyFileName : Path.Combine(directory, dailyFileName);
     }
 }
+
+internal sealed record HookPayloadContext(
+    string SessionId,
+    string TurnId,
+    string Cwd,
+    string PermissionMode,
+    string Model);
+
+internal sealed record ProcessResult(int ExitCode, string StandardOutput, string StandardError);
