@@ -13,6 +13,7 @@ internal static class Uninstaller
     {
         var options = UninstallOptions.Parse(args);
         var codexHome = GetCodexHome();
+        var normalizedCodexHome = Path.GetFullPath(codexHome);
         var manifestInfos = await LoadManifestsAsync(codexHome);
 
         if (manifestInfos.Count == 0)
@@ -30,6 +31,18 @@ internal static class Uninstaller
             Console.WriteLine($"- Manifest: {manifestPath}");
             foreach (var entry in manifest.Entries)
             {
+                if (!TryResolveAndValidatePath(codexHome, normalizedCodexHome, entry.TargetPath, out _))
+                {
+                    Console.WriteLine($"[warning] Skipped out-of-scope uninstall target: {entry.TargetPath}");
+                    continue;
+                }
+
+                if (!string.IsNullOrWhiteSpace(entry.BackupPath) && !TryResolveAndValidatePath(codexHome, normalizedCodexHome, entry.BackupPath, out _))
+                {
+                    Console.WriteLine($"[warning] Skipped restore from out-of-scope backup path: {entry.BackupPath}");
+                    continue;
+                }
+
                 if (!string.IsNullOrWhiteSpace(entry.BackupPath))
                 {
                     Console.WriteLine($"- restore: {entry.TargetPath} <- {entry.BackupPath}");
@@ -51,6 +64,18 @@ internal static class Uninstaller
         {
             foreach (var entry in manifestInfo.Manifest.Entries.AsEnumerable().Reverse())
             {
+                if (!TryResolveAndValidatePath(codexHome, normalizedCodexHome, entry.TargetPath, out _))
+                {
+                    Console.WriteLine($"[warning] Skipped out-of-scope uninstall target: {entry.TargetPath}");
+                    continue;
+                }
+
+                if (!string.IsNullOrWhiteSpace(entry.BackupPath) && !TryResolveAndValidatePath(codexHome, normalizedCodexHome, entry.BackupPath, out _))
+                {
+                    Console.WriteLine($"[warning] Skipped restore from out-of-scope backup path: {entry.BackupPath}");
+                    continue;
+                }
+
                 if (!processedTargets.Add(entry.TargetPath))
                 {
                     continue;
@@ -130,6 +155,38 @@ internal static class Uninstaller
         using var stream = File.OpenRead(path);
         var hash = SHA256.HashData(stream);
         return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
+    private static bool TryResolveAndValidatePath(string basePath, string normalizedBase, string path, out string resolvedPath)
+    {
+        resolvedPath = string.Empty;
+        try
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return false;
+            }
+
+            resolvedPath = Path.GetFullPath(path, basePath);
+        }
+        catch
+        {
+            return false;
+        }
+
+        var normalizedPath = EnsureTrailingSeparator(Path.GetFullPath(resolvedPath));
+        var normalizedRoot = EnsureTrailingSeparator(normalizedBase);
+        return normalizedPath.StartsWith(normalizedRoot, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string EnsureTrailingSeparator(string path)
+    {
+        if (path.EndsWith(Path.DirectorySeparatorChar) || path.EndsWith(Path.AltDirectorySeparatorChar))
+        {
+            return path;
+        }
+
+        return path + Path.DirectorySeparatorChar;
     }
 }
 

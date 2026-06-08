@@ -9,8 +9,8 @@ return await Installer.RunAsync(args);
 internal static class Installer
 {
     private const string ManifestFileName = "codex-metrix-and-analyze.manifest.json";
-    private const string HookTemplateRelativePath = "codex\\hooks.json";
-    private const string LoggerSourceRelativePath = "hooks\\codex-agent-usage-logger.cs";
+    private static readonly string HookTemplateRelativePath = Path.Combine("codex", "hooks.json");
+    private static readonly string LoggerSourceRelativePath = Path.Combine("hooks", "codex-agent-usage-logger.cs");
     private const string LoggerExecutableName = "codex-agent-usage-logger.exe";
     private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
 
@@ -45,11 +45,6 @@ internal static class Installer
         if (hookOperation.RequiresInstall && hookOperation.TargetExists && !options.Force)
         {
             conflicts.Add(hookOperation.TargetPath);
-        }
-
-        if (publishedExeOperation.TargetExists && !options.Force)
-        {
-            conflicts.Add(publishedExeOperation.TargetPath);
         }
 
         PrintPlan(options, codexHome, targetLogsDir, backupRoot, manifestPath, tempPublishDir, hookOperation, publishedExeOperation);
@@ -134,8 +129,8 @@ internal static class Installer
         Console.WriteLine("Next steps:");
         Console.WriteLine("1. Open Codex and run /hooks to trust the new command hooks.");
         Console.WriteLine("2. Run `dotnet run --file scripts/test-hook.cs` from this repo.");
-        Console.WriteLine($"3. Review {Path.Combine(codexHome, "logs", "agent-usage.jsonl")} after a Codex turn.");
-        Console.WriteLine($"4. If the hook ever fails, inspect {Path.Combine(codexHome, "logs", "agent-usage-error.log")}.");
+        Console.WriteLine($"3. Review {GetDailyLogPath(Path.Combine(codexHome, "logs", "agent-usage.jsonl"))} after a Codex turn.");
+        Console.WriteLine($"4. If the hook ever fails, inspect {GetDailyLogPath(Path.Combine(codexHome, "logs", "agent-usage-error.log"))}.");
         return 0;
     }
 
@@ -187,7 +182,7 @@ internal static class Installer
         Console.WriteLine(options.DryRun ? "Install dry-run:" : "Install plan:");
         Console.WriteLine($"- Codex home: {codexHome}");
         Console.WriteLine($"- Logs dir: {targetLogsDir}");
-        Console.WriteLine($"- Error log: {Path.Combine(codexHome, "logs", "agent-usage-error.log")}");
+        Console.WriteLine($"- Error log: {GetDailyLogPath(Path.Combine(codexHome, "logs", "agent-usage-error.log"))}");
         Console.WriteLine($"- Backup root: {backupRoot}");
         Console.WriteLine($"- Manifest: {manifestPath}");
         Console.WriteLine($"- Publish: {LoggerSourceRelativePath} -> {tempPublishDir} using --use-current-runtime");
@@ -345,6 +340,26 @@ internal static class Installer
         var bytes = Encoding.UTF8.GetBytes(content);
         var hash = SHA256.HashData(bytes);
         return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
+    private static string GetDailyLogPath(string basePath)
+    {
+        var directory = Path.GetDirectoryName(basePath);
+        var fileName = Path.GetFileName(basePath);
+
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            return basePath;
+        }
+
+        var date = DateTimeOffset.Now.ToString("yyyy-MM-dd");
+        var extension = Path.GetExtension(fileName);
+        var fileNameWithoutExtension = Path.GetFileNameWithoutExtension(fileName);
+        var dailyFileName = string.IsNullOrWhiteSpace(extension)
+            ? $"{fileNameWithoutExtension}-{date}"
+            : $"{fileNameWithoutExtension}-{date}{extension}";
+
+        return string.IsNullOrWhiteSpace(directory) ? dailyFileName : Path.Combine(directory, dailyFileName);
     }
 
     private static string BuildHooksJson(string hookExePath)

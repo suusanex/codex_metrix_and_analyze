@@ -1,6 +1,8 @@
 # Agent Usage Event Schema
 
-`agent-usage.jsonl` は 1 行あたり 1 件の JSON オブジェクトとして保存される。
+`~/.codex/logs/agent-usage-YYYY-MM-DD.jsonl` は 1 行あたり 1 件の JSON オブジェクトとして保存される。
+
+`CODEX_AGENT_USAGE_LOG` の基準パスは `agent-usage.jsonl` で、出力時は当日の日付を付与した `agent-usage-YYYY-MM-DD.jsonl` が生成される。
 
 ## 記録フィールド
 
@@ -27,7 +29,7 @@
 
 ## エラーログ
 
-フックでエラーが発生すると `~/.codex/logs/agent-usage-error.log` に 1 行 1 件の JSON オブジェクトとして追記される。
+フックでエラーが発生すると `~/.codex/logs/agent-usage-error-YYYY-MM-DD.log` に 1 行 1 件の JSON オブジェクトとして追記される。
 
 エラーログは通常の JSONL ログとは別ファイルで、エラー時のみ更新される。
 

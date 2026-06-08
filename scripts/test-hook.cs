@@ -27,8 +27,10 @@ internal static class HookTester
             }
 
             var loggerPath = Path.Combine(tempCodexHome, "hooks", "codex-agent-usage-logger.exe");
-            var logPath = Path.Combine(tempCodexHome, "logs", "agent-usage.jsonl");
-            var errorLogPath = Path.Combine(tempCodexHome, "logs", "agent-usage-error.log");
+            var logBasePath = Path.Combine(tempCodexHome, "logs", "agent-usage.jsonl");
+            var logPath = GetDailyLogPath(logBasePath);
+            var errorLogBasePath = Path.Combine(tempCodexHome, "logs", "agent-usage-error.log");
+            var errorLogPath = GetDailyLogPath(errorLogBasePath);
             var hooksJsonPath = Path.Combine(tempCodexHome, "hooks.json");
 
             if (!File.Exists(hooksJsonPath))
@@ -59,7 +61,7 @@ internal static class HookTester
                 }
             }
 
-            await InvokeHookAsync(loggerPath, tempCodexHome, logPath, errorLogPath, SerializeJson(writer =>
+            await InvokeHookAsync(loggerPath, tempCodexHome, logBasePath, errorLogBasePath, SerializeJson(writer =>
             {
                 writer.WriteStartObject();
                 writer.WriteString("hook_event_name", "SessionStart");
@@ -73,7 +75,7 @@ internal static class HookTester
                 writer.WriteEndObject();
             }));
 
-            await InvokeHookAsync(loggerPath, tempCodexHome, logPath, errorLogPath, SerializeJson(writer =>
+            await InvokeHookAsync(loggerPath, tempCodexHome, logBasePath, errorLogBasePath, SerializeJson(writer =>
             {
                 writer.WriteStartObject();
                 writer.WriteString("hook_event_name", "SubagentStart");
@@ -89,7 +91,7 @@ internal static class HookTester
 
             await Task.Delay(25);
 
-            await InvokeHookAsync(loggerPath, tempCodexHome, logPath, errorLogPath, SerializeJson(writer =>
+            await InvokeHookAsync(loggerPath, tempCodexHome, logBasePath, errorLogBasePath, SerializeJson(writer =>
             {
                 writer.WriteStartObject();
                 writer.WriteString("hook_event_name", "SubagentStop");
@@ -103,7 +105,7 @@ internal static class HookTester
                 writer.WriteEndObject();
             }));
 
-            await InvokeHookAsync(loggerPath, tempCodexHome, logPath, errorLogPath, SerializeJson(writer =>
+            await InvokeHookAsync(loggerPath, tempCodexHome, logBasePath, errorLogBasePath, SerializeJson(writer =>
             {
                 writer.WriteStartObject();
                 writer.WriteString("hook_event_name", "PostToolUse");
@@ -133,7 +135,7 @@ internal static class HookTester
                 return 1;
             }
 
-            if (File.Exists(errorLogPath))
+            if (File.Exists(errorLogPath) || File.Exists(errorLogBasePath))
             {
                 Console.Error.WriteLine("Error log should not exist after successful hook runs.");
                 return 1;
@@ -167,20 +169,21 @@ internal static class HookTester
                 return 1;
             }
 
-            var invalidPayloadExitCode = await InvokeHookAsync(loggerPath, tempCodexHome, logPath, errorLogPath, "{");
+            var invalidPayloadExitCode = await InvokeHookAsync(loggerPath, tempCodexHome, logBasePath, errorLogBasePath, "{");
             if (invalidPayloadExitCode != 0)
             {
                 Console.Error.WriteLine("Hook should return 0 even when payload parsing fails.");
                 return 1;
             }
 
-            if (!File.Exists(errorLogPath))
+            if (!File.Exists(errorLogPath) && !File.Exists(errorLogBasePath))
             {
                 Console.Error.WriteLine("Error log was not created for the malformed payload.");
                 return 1;
             }
 
-            var errorLines = await File.ReadAllLinesAsync(errorLogPath);
+            var actualErrorLogPath = File.Exists(errorLogPath) ? errorLogPath : errorLogBasePath;
+            var errorLines = await File.ReadAllLinesAsync(actualErrorLogPath);
             if (errorLines.Length != 1)
             {
                 Console.Error.WriteLine($"Expected 1 error log line, found {errorLines.Length}.");
@@ -285,5 +288,25 @@ internal static class HookTester
         }
 
         return Encoding.UTF8.GetString(stream.ToArray());
+    }
+
+    private static string GetDailyLogPath(string basePath)
+    {
+        var directory = Path.GetDirectoryName(basePath);
+        var fileName = Path.GetFileName(basePath);
+
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            return basePath;
+        }
+
+        var date = DateTimeOffset.Now.ToString("yyyy-MM-dd");
+        var extension = Path.GetExtension(fileName);
+        var fileNameWithoutExtension = Path.GetFileNameWithoutExtension(fileName);
+        var dailyFileName = string.IsNullOrWhiteSpace(extension)
+            ? $"{fileNameWithoutExtension}-{date}"
+            : $"{fileNameWithoutExtension}-{date}{extension}";
+
+        return string.IsNullOrWhiteSpace(directory) ? dailyFileName : Path.Combine(directory, dailyFileName);
     }
 }
