@@ -39,6 +39,15 @@ internal enum OutputFormat
     Json
 }
 
+internal enum AllocationBasis
+{
+    Weighted,
+    Duration,
+    ToolElapsed,
+    ToolCount,
+    ResponseSize
+}
+
 internal sealed class UsageOptions
 {
     public IReadOnlyList<string> LogPaths { get; init; } = [];
@@ -48,27 +57,31 @@ internal sealed class UsageOptions
     public TimeSpan Bucket { get; init; } = TimeSpan.FromMinutes(15);
     public string? SessionIdFilter { get; init; }
     public string? CwdContains { get; init; }
-    public string? ExpectedParentModel { get; init; }
-    public string? ExpectedSubagentModel { get; init; }
-    public int Top { get; init; } = 20;
     public OutputFormat Format { get; init; } = OutputFormat.Markdown;
     public string? OutputPath { get; init; }
+    public double? LimitBefore { get; init; }
+    public double? LimitAfter { get; init; }
+    public double? LimitDelta { get; init; }
+    public string LimitUnit { get; init; } = "unknown";
+    public AllocationBasis AllocationBasis { get; init; } = AllocationBasis.Weighted;
     public bool ShowHelp { get; init; }
 
     public static UsageOptions Parse(string[] args)
     {
         var logPaths = new List<string>();
-        var from = (DateTimeOffset?)null;
-        var to = (DateTimeOffset?)null;
+        DateTimeOffset? from = null;
+        DateTimeOffset? to = null;
         var timezone = "local";
         var bucket = TimeSpan.FromMinutes(15);
         string? sessionId = null;
         string? cwdContains = null;
-        string? expectedParent = null;
-        string? expectedSubagent = null;
-        var top = 20;
         var format = OutputFormat.Markdown;
         string? output = null;
+        double? limitBefore = null;
+        double? limitAfter = null;
+        double? limitDelta = null;
+        var limitUnit = "unknown";
+        var allocationBasis = AllocationBasis.Weighted;
         var showHelp = false;
 
         for (var i = 0; i < args.Length; i++)
@@ -83,132 +96,59 @@ internal sealed class UsageOptions
                     break;
 
                 case "--log":
-                    if (i + 1 >= args.Length)
-                    {
-                        throw new ArgumentException("Missing value for --log");
-                    }
-
-                    logPaths.Add(args[++i]);
+                    logPaths.Add(RequireValue(args, ref i, "--log"));
                     break;
 
                 case "--from":
-                    if (i + 1 >= args.Length)
-                    {
-                        throw new ArgumentException("Missing value for --from");
-                    }
-
-                    var fromValue = args[++i];
-                    if (!DateTimeOffset.TryParse(fromValue, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var fromParsed))
-                    {
-                        throw new ArgumentException($"Invalid datetime for --from: {fromValue}");
-                    }
-
-                    from = fromParsed;
+                    from = ParseDateTimeOffset(RequireValue(args, ref i, "--from"), "--from");
                     break;
 
                 case "--to":
-                    if (i + 1 >= args.Length)
-                    {
-                        throw new ArgumentException("Missing value for --to");
-                    }
-
-                    var toValue = args[++i];
-                    if (!DateTimeOffset.TryParse(toValue, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var toParsed))
-                    {
-                        throw new ArgumentException($"Invalid datetime for --to: {toValue}");
-                    }
-
-                    to = toParsed;
+                    to = ParseDateTimeOffset(RequireValue(args, ref i, "--to"), "--to");
                     break;
 
                 case "--timezone":
-                    if (i + 1 >= args.Length)
-                    {
-                        throw new ArgumentException("Missing value for --timezone");
-                    }
-
-                    timezone = args[++i];
+                    timezone = RequireValue(args, ref i, "--timezone");
                     break;
 
                 case "--bucket":
-                    if (i + 1 >= args.Length)
-                    {
-                        throw new ArgumentException("Missing value for --bucket");
-                    }
-
-                    bucket = ParseBucket(args[++i]);
+                    bucket = ParseBucket(RequireValue(args, ref i, "--bucket"));
                     break;
 
                 case "--session-id":
-                    if (i + 1 >= args.Length)
-                    {
-                        throw new ArgumentException("Missing value for --session-id");
-                    }
-
-                    sessionId = args[++i];
+                    sessionId = RequireValue(args, ref i, "--session-id");
                     break;
 
                 case "--cwd-contains":
-                    if (i + 1 >= args.Length)
-                    {
-                        throw new ArgumentException("Missing value for --cwd-contains");
-                    }
-
-                    cwdContains = args[++i];
-                    break;
-
-                case "--expected-parent-model":
-                    if (i + 1 >= args.Length)
-                    {
-                        throw new ArgumentException("Missing value for --expected-parent-model");
-                    }
-
-                    expectedParent = args[++i];
-                    break;
-
-                case "--expected-subagent-model":
-                    if (i + 1 >= args.Length)
-                    {
-                        throw new ArgumentException("Missing value for --expected-subagent-model");
-                    }
-
-                    expectedSubagent = args[++i];
-                    break;
-
-                case "--top":
-                    if (i + 1 >= args.Length)
-                    {
-                        throw new ArgumentException("Missing value for --top");
-                    }
-
-                    if (!int.TryParse(args[++i], NumberStyles.Integer, CultureInfo.InvariantCulture, out top) || top < 1)
-                    {
-                        throw new ArgumentException("Invalid value for --top");
-                    }
-
+                    cwdContains = RequireValue(args, ref i, "--cwd-contains");
                     break;
 
                 case "--format":
-                    if (i + 1 >= args.Length)
-                    {
-                        throw new ArgumentException("Missing value for --format");
-                    }
-
-                    var formatValue = args[++i];
-                    format = formatValue.Equals("json", StringComparison.OrdinalIgnoreCase)
-                        ? OutputFormat.Json
-                        : formatValue.Equals("markdown", StringComparison.OrdinalIgnoreCase)
-                            ? OutputFormat.Markdown
-                            : throw new ArgumentException($"Unknown format: {formatValue}");
+                    format = ParseFormat(RequireValue(args, ref i, "--format"));
                     break;
 
                 case "--output":
-                    if (i + 1 >= args.Length)
-                    {
-                        throw new ArgumentException("Missing value for --output");
-                    }
+                    output = RequireValue(args, ref i, "--output");
+                    break;
 
-                    output = args[++i];
+                case "--limit-before":
+                    limitBefore = ParseDouble(RequireValue(args, ref i, "--limit-before"), "--limit-before");
+                    break;
+
+                case "--limit-after":
+                    limitAfter = ParseDouble(RequireValue(args, ref i, "--limit-after"), "--limit-after");
+                    break;
+
+                case "--limit-delta":
+                    limitDelta = ParseDouble(RequireValue(args, ref i, "--limit-delta"), "--limit-delta");
+                    break;
+
+                case "--limit-unit":
+                    limitUnit = RequireValue(args, ref i, "--limit-unit");
+                    break;
+
+                case "--allocation-basis":
+                    allocationBasis = ParseAllocationBasis(RequireValue(args, ref i, "--allocation-basis"));
                     break;
 
                 default:
@@ -221,13 +161,23 @@ internal sealed class UsageOptions
             throw new ArgumentException("--from must not be later than --to");
         }
 
+        if (limitDelta is null && limitBefore.HasValue && limitAfter.HasValue)
+        {
+            limitDelta = limitBefore.Value - limitAfter.Value;
+        }
+
+        if (limitDelta.HasValue && limitBefore.HasValue && limitAfter.HasValue)
+        {
+            var computed = limitBefore.Value - limitAfter.Value;
+            if (Math.Abs(computed - limitDelta.Value) > 0.000001d)
+            {
+                throw new ArgumentException("--limit-delta does not match --limit-before - --limit-after");
+            }
+        }
+
         if (logPaths.Count == 0)
         {
-            var defaultLogs = ResolveDefaultLogPaths();
-            foreach (var defaultLog in defaultLogs)
-            {
-                logPaths.Add(defaultLog);
-            }
+            logPaths.AddRange(ResolveDefaultLogPaths());
         }
 
         if (logPaths.Count == 0)
@@ -237,18 +187,20 @@ internal sealed class UsageOptions
 
         return new UsageOptions
         {
-            LogPaths = logPaths,
+            LogPaths = logPaths.Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
             From = from,
             To = to,
             Timezone = timezone,
             Bucket = bucket,
             SessionIdFilter = sessionId,
             CwdContains = cwdContains,
-            ExpectedParentModel = expectedParent,
-            ExpectedSubagentModel = expectedSubagent,
-            Top = top,
             Format = format,
             OutputPath = output,
+            LimitBefore = limitBefore,
+            LimitAfter = limitAfter,
+            LimitDelta = limitDelta,
+            LimitUnit = limitUnit,
+            AllocationBasis = allocationBasis,
             ShowHelp = showHelp
         };
     }
@@ -260,20 +212,61 @@ Usage:
   dotnet run --file scripts\codex-agent-usage-report.cs -- [options]
 
 Options:
-  --log <path>                  Input JSONL log file (repeatable)
-  --from <datetime>             Analyze from this datetime (ISO-8601). Omit for open start.
-  --to <datetime>               Analyze until this datetime (ISO-8601). Omit for open end.
-  --timezone local|utc|Asia/Tokyo  Timeline bucket/display timezone. Omit for local.
-  --bucket 5m|15m|30m|1h         Timeline bucket width.
-  --session-id <id>             Filter by session_id.
-  --cwd-contains <text>         Filter by cwd substring.
-  --expected-parent-model <v>    Check parent model expectation.
-  --expected-subagent-model <v>  Check subagent model expectation.
-  --top <n>                     Top command entries (default 20).
-  --format markdown|json        Output format.
-  --output <path>               Write output to file.
+  --log <path>                    Input JSONL log file (repeatable)
+  --from <datetime>               Analyze from this datetime (ISO-8601)
+  --to <datetime>                 Analyze until this datetime (ISO-8601)
+  --timezone local|utc|Asia/Tokyo Timeline bucket/display timezone
+  --bucket 5m|15m|30m|1h          Timeline bucket width
+  --session-id <id>               Filter by session_id
+  --cwd-contains <text>           Filter by cwd substring
+  --limit-before <number>         Manual limit value before the observation window
+  --limit-after <number>          Manual limit value after the observation window
+  --limit-delta <number>          Observed delta to allocate
+  --limit-unit percent|credits|points|unknown
+  --allocation-basis weighted|duration|tool-elapsed|tool-count|response-size
+  --format markdown|json          Output format
+  --output <path>                 Write output to file
 """;
         Console.WriteLine(usage);
+    }
+
+    private static string RequireValue(string[] args, ref int index, string optionName)
+    {
+        if (index + 1 >= args.Length)
+        {
+            throw new ArgumentException($"Missing value for {optionName}");
+        }
+
+        return args[++index];
+    }
+
+    private static DateTimeOffset ParseDateTimeOffset(string value, string optionName)
+    {
+        if (!DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var parsed))
+        {
+            throw new ArgumentException($"Invalid datetime for {optionName}: {value}");
+        }
+
+        return parsed;
+    }
+
+    private static double ParseDouble(string value, string optionName)
+    {
+        if (!double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed))
+        {
+            throw new ArgumentException($"Invalid number for {optionName}: {value}");
+        }
+
+        return parsed;
+    }
+
+    private static OutputFormat ParseFormat(string value)
+    {
+        return value.Equals("json", StringComparison.OrdinalIgnoreCase)
+            ? OutputFormat.Json
+            : value.Equals("markdown", StringComparison.OrdinalIgnoreCase)
+                ? OutputFormat.Markdown
+                : throw new ArgumentException($"Unknown format: {value}");
     }
 
     private static TimeSpan ParseBucket(string value)
@@ -288,30 +281,53 @@ Options:
         };
     }
 
+    private static AllocationBasis ParseAllocationBasis(string value)
+    {
+        return value.ToLowerInvariant() switch
+        {
+            "weighted" => AllocationBasis.Weighted,
+            "duration" => AllocationBasis.Duration,
+            "tool-elapsed" => AllocationBasis.ToolElapsed,
+            "tool-count" => AllocationBasis.ToolCount,
+            "response-size" => AllocationBasis.ResponseSize,
+            _ => throw new ArgumentException($"Unknown allocation basis: {value}")
+        };
+    }
+
     private static IEnumerable<string> ResolveDefaultLogPaths()
     {
-        var explicitHome = Environment.GetEnvironmentVariable("CODEX_AGENT_USAGE_LOG");
-        string basePath;
-        if (!string.IsNullOrWhiteSpace(explicitHome))
+        foreach (var candidate in GetBaseCandidates())
         {
-            basePath = explicitHome;
-        }
-        else
-        {
-            var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            var home = Environment.GetEnvironmentVariable("CODEX_HOME");
-            if (string.IsNullOrWhiteSpace(home))
+            foreach (var resolved in ResolveDefaultLogPathCandidates(candidate))
             {
-                home = Path.Combine(userProfile, ".codex");
+                yield return resolved;
             }
-
-            basePath = Path.Combine(home, "logs", "agent-usage.jsonl");
         }
+    }
 
-        foreach (var candidate in ResolveDefaultLogPathCandidates(basePath))
+    private static IEnumerable<string> GetBaseCandidates()
+    {
+        var explicitObservation = Environment.GetEnvironmentVariable("CODEX_AGENT_OBSERVATION_LOG");
+        if (!string.IsNullOrWhiteSpace(explicitObservation))
         {
-            yield return candidate;
+            yield return explicitObservation;
         }
+
+        var explicitLegacy = Environment.GetEnvironmentVariable("CODEX_AGENT_USAGE_LOG");
+        if (!string.IsNullOrWhiteSpace(explicitLegacy))
+        {
+            yield return explicitLegacy;
+        }
+
+        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var codexHome = Environment.GetEnvironmentVariable("CODEX_HOME");
+        if (string.IsNullOrWhiteSpace(codexHome))
+        {
+            codexHome = Path.Combine(userProfile, ".codex");
+        }
+
+        yield return Path.Combine(codexHome, "logs", "agent-observations.jsonl");
+        yield return Path.Combine(codexHome, "logs", "agent-usage.jsonl");
     }
 
     private static IEnumerable<string> ResolveDefaultLogPathCandidates(string basePath)
@@ -341,7 +357,6 @@ Options:
         if (File.Exists(todayPath))
         {
             yield return todayPath;
-            yield break;
         }
 
         var latest = Directory
@@ -358,7 +373,6 @@ Options:
 
 internal static class UsageReportGenerator
 {
-    private static readonly StringComparer PathComparer = StringComparer.OrdinalIgnoreCase;
     private static readonly Dictionary<string, string> IanaTimezoneAlias = new(StringComparer.OrdinalIgnoreCase)
     {
         ["asia/tokyo"] = "Tokyo Standard Time",
@@ -369,55 +383,65 @@ internal static class UsageReportGenerator
         ["utc"] = "UTC"
     };
 
-    public static UsageReport Generate(UsageOptions options)
+    public static UsageReportOutput Generate(UsageOptions options)
     {
         var records = new List<UsageRecord>();
         var parseErrors = new List<ParseError>();
 
-        foreach (var logPath in options.LogPaths.Distinct(PathComparer))
+        foreach (var logPath in options.LogPaths.Distinct(StringComparer.OrdinalIgnoreCase))
         {
             foreach (var (record, parseError) in ReadLogFile(logPath))
             {
                 if (parseError is not null)
                 {
-                    parseError.SourcePath = logPath;
                     parseErrors.Add(parseError);
-                    Console.Error.WriteLine(parseError.Exception);
                     continue;
                 }
 
-                if (record is not null && IsInRange(record.RecordedAt, options.From, options.To) &&
-                    MatchesFilter(record, options))
+                if (record is null)
                 {
-                    records.Add(record);
+                    continue;
                 }
+
+                if (!IsInRange(record.RecordedAt, options.From, options.To))
+                {
+                    continue;
+                }
+
+                if (!MatchesFilter(record, options))
+                {
+                    continue;
+                }
+
+                records.Add(record);
             }
         }
 
         records.Sort((a, b) => a.RecordedAt.CompareTo(b.RecordedAt));
-        DateTimeOffset? filteredMin = null;
-        DateTimeOffset? filteredMax = null;
-        if (records.Count > 0)
+        var timezone = ResolveTimeZone(options.Timezone);
+        var warnings = new List<string>();
+        var notAvailable = new List<string>();
+        if (records.Any(x => !x.IsV2))
         {
-            filteredMin = records.First().RecordedAt;
-            filteredMax = records.Last().RecordedAt;
+            warnings.Add("旧 agent-usage ログでは tool_use_id / trace/span / repository metadata など一部の v2 項目が欠落する。");
+            notAvailable.Add("旧ログ行では trace/span IDs, unknown_payload_keys, capture_policy を復元できない。");
         }
 
-        var tz = ResolveTimeZone(options.Timezone);
-        var bucket = options.Bucket;
-        var modelStats = new Dictionary<string, ModelUsageStats>(StringComparer.OrdinalIgnoreCase);
-        var agentTypeStats = new Dictionary<string, AgentTypeUsageStats>(StringComparer.OrdinalIgnoreCase);
-        var commandCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        var timeline = new Dictionary<DateTimeOffset, TimelineStats>();
-        var eventCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var toolInvocations = BuildToolInvocations(records, warnings);
+        var subagentRuns = BuildSubagentRuns(records, warnings);
+        var correlationIssues = BuildCorrelationIssues(toolInvocations, subagentRuns);
+
+        var modelAcc = new Dictionary<string, WorkAccumulator>(StringComparer.OrdinalIgnoreCase);
+        var agentTypeAcc = new Dictionary<string, WorkAccumulator>(StringComparer.OrdinalIgnoreCase);
+        var toolAcc = new Dictionary<string, WorkAccumulator>(StringComparer.OrdinalIgnoreCase);
+        var repoAcc = new Dictionary<string, WorkAccumulator>(StringComparer.OrdinalIgnoreCase);
+        var timelineAcc = new Dictionary<string, WorkAccumulator>(StringComparer.OrdinalIgnoreCase);
         var sessions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var turns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var activeSubagents = new Dictionary<string, ActiveSubagentRun>(StringComparer.OrdinalIgnoreCase);
-        var completedRuns = new List<SubagentRunRecord>();
-        var incompleteRuns = new List<SubagentRunRecord>();
-        var orphanStops = new List<SubagentRunRecord>();
-
-        int totalParseErrors = parseErrors.Count;
+        var repositories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var models = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var eventCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var commandKindCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var record in records)
         {
@@ -431,279 +455,472 @@ internal static class UsageReportGenerator
                 turns.Add(record.TurnId);
             }
 
-            var eventName = record.Event;
-            eventCounts[eventName] = eventCounts.TryGetValue(eventName, out var eventCount) ? eventCount + 1 : 1;
+            repositories.Add(record.RepositoryKey);
+            models.Add(record.ModelKey);
+            Increment(eventCounts, record.Event);
 
-            if (record.AgentId is not null
-                && record.AgentId.Equals("00000000-0000-0000-0000-000000000000", StringComparison.OrdinalIgnoreCase))
+            var bucket = FloorToBucket(TimeZoneInfo.ConvertTime(record.RecordedAt, timezone), options.Bucket)
+                .ToString("O", CultureInfo.InvariantCulture);
+
+            AddRecord(modelAcc.GetOrAdd(record.ModelKey), record);
+            AddRecord(agentTypeAcc.GetOrAdd(record.AgentTypeKey), record);
+            AddRecord(toolAcc.GetOrAdd(record.ToolKey), record);
+            AddRecord(repoAcc.GetOrAdd(record.RepositoryKey), record);
+            AddRecord(timelineAcc.GetOrAdd(bucket), record);
+        }
+
+        foreach (var invocation in toolInvocations)
+        {
+            AddInvocation(modelAcc.GetOrAdd(invocation.ModelKey), invocation, commandKindCounts);
+            AddInvocation(agentTypeAcc.GetOrAdd(invocation.AgentTypeKey), invocation, null);
+            AddInvocation(toolAcc.GetOrAdd(invocation.ToolKey), invocation, null);
+            AddInvocation(repoAcc.GetOrAdd(invocation.RepositoryKey), invocation, null);
+
+            var bucket = FloorToBucket(TimeZoneInfo.ConvertTime(invocation.RecordedAt, timezone), options.Bucket)
+                .ToString("O", CultureInfo.InvariantCulture);
+            AddInvocation(timelineAcc.GetOrAdd(bucket), invocation, null);
+        }
+
+        foreach (var run in subagentRuns)
+        {
+            AddSubagentRun(modelAcc.GetOrAdd(run.ModelKey), run);
+            AddSubagentRun(agentTypeAcc.GetOrAdd(run.AgentTypeKey), run);
+            AddSubagentRun(toolAcc.GetOrAdd("(subagent-run)"), run);
+            AddSubagentRun(repoAcc.GetOrAdd(run.RepositoryKey), run);
+
+            var bucket = FloorToBucket(TimeZoneInfo.ConvertTime(run.RecordedAt, timezone), options.Bucket)
+                .ToString("O", CultureInfo.InvariantCulture);
+            AddSubagentRun(timelineAcc.GetOrAdd(bucket), run);
+        }
+
+        var modelRows = BuildRows(modelAcc)
+            .Select(entry => CreateWorkRow(entry.Key, entry.Value))
+            .OrderByDescending(x => x.weighted_work_score)
+            .ThenBy(x => x.name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        NormalizeShares(modelRows);
+
+        var agentTypeRows = BuildRows(agentTypeAcc)
+            .Select(entry => CreateWorkRow(entry.Key, entry.Value))
+            .OrderByDescending(x => x.weighted_work_score)
+            .ThenBy(x => x.name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        NormalizeShares(agentTypeRows);
+
+        var toolRows = BuildRows(toolAcc)
+            .Select(entry => CreateWorkRow(entry.Key, entry.Value))
+            .OrderByDescending(x => x.weighted_work_score)
+            .ThenBy(x => x.name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        NormalizeShares(toolRows);
+
+        var repositoryRows = BuildRows(repoAcc)
+            .Select(entry => CreateWorkRow(entry.Key, entry.Value))
+            .OrderByDescending(x => x.weighted_work_score)
+            .ThenBy(x => x.name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        NormalizeShares(repositoryRows);
+
+        var timelineRows = BuildRows(timelineAcc)
+            .Select(entry => CreateWorkRow(entry.Key, entry.Value))
+            .OrderBy(x => x.name, StringComparer.Ordinal)
+            .ToList();
+        NormalizeShares(timelineRows);
+
+        var allocation = BuildAllocation(options, modelRows);
+        if (allocation is null)
+        {
+            notAvailable.Add("limit delta allocation は --limit-delta または --limit-before / --limit-after 指定時のみ算出する。");
+        }
+
+        var summary = new SummarySection
+        {
+            generated_at = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture),
+            period_from = records.FirstOrDefault()?.RecordedAt.ToString("O", CultureInfo.InvariantCulture),
+            period_to = records.LastOrDefault()?.RecordedAt.ToString("O", CultureInfo.InvariantCulture),
+            timezone = timezone.Id,
+            parsed_records = records.Count,
+            parse_errors = parseErrors.Count,
+            sessions = sessions.Count,
+            turns = turns.Count,
+            repositories = repositories.Count,
+            models = models.Count,
+            tool_invocations = toolInvocations.Count,
+            matched_tool_invocations = toolInvocations.Count(x => x.CorrelationStatus == "matched"),
+            missing_pre = toolInvocations.Count(x => x.CorrelationStatus == "missing_pre"),
+            missing_post = toolInvocations.Count(x => x.CorrelationStatus == "missing_post"),
+            duplicate_tool = toolInvocations.Count(x => x.CorrelationStatus == "duplicate"),
+            subagent_runs = subagentRuns.Count,
+            missing_start = subagentRuns.Count(x => x.CorrelationStatus == "missing_start"),
+            missing_stop = subagentRuns.Count(x => x.CorrelationStatus == "missing_stop"),
+            weighted_score_total = modelRows.Sum(x => x.weighted_work_score),
+            command_kind_counts = commandKindCounts,
+            event_counts = eventCounts,
+            limit_delta = allocation?.limit_delta,
+            limit_unit = allocation?.limit_unit
+        };
+
+        return new UsageReportOutput
+        {
+            summary = summary,
+            model_rows = modelRows,
+            agent_type_rows = agentTypeRows,
+            tool_rows = toolRows,
+            repository_rows = repositoryRows,
+            timeline_rows = timelineRows,
+            correlation_issues = correlationIssues,
+            allocation = allocation,
+            warnings = warnings,
+            not_available = notAvailable,
+            parse_errors = parseErrors
+        };
+    }
+
+    private static AllocationSection? BuildAllocation(UsageOptions options, List<WorkRow> modelRows)
+    {
+        if (!options.LimitDelta.HasValue)
+        {
+            return null;
+        }
+
+        double GetBasisValue(WorkRow row)
+        {
+            return options.AllocationBasis switch
             {
-                record.AgentId = null;
-            }
+                AllocationBasis.Duration => row.total_subagent_duration_ms + row.total_tool_elapsed_ms,
+                AllocationBasis.ToolElapsed => row.total_tool_elapsed_ms,
+                AllocationBasis.ToolCount => row.tool_invocations,
+                AllocationBasis.ResponseSize => row.tool_response_bytes,
+                _ => row.weighted_work_score
+            };
+        }
 
-            var model = record.Model ?? "(unknown)";
-            var modelStat = modelStats.GetOrAdd(model);
-            modelStat.Records++;
-
-            if (!string.IsNullOrWhiteSpace(record.SessionId))
+        var rows = modelRows
+            .Select(row => new AllocationRow
             {
-                modelStat.Sessions.Add(record.SessionId);
-            }
+                model = row.name,
+                basis_value = GetBasisValue(row)
+            })
+            .ToList();
 
-            var agentType = string.IsNullOrWhiteSpace(record.AgentType) ? "parent/unassigned" : record.AgentType;
-            var agentTypeStat = agentTypeStats.GetOrAdd(agentType);
-            agentTypeStat.TotalRecords++;
+        var total = rows.Sum(x => x.basis_value);
+        foreach (var row in rows)
+        {
+            row.share = total <= 0 ? 0 : row.basis_value / total;
+            row.estimated_limit_delta = options.LimitDelta.Value * row.share;
+        }
 
-            if (record.DurationMs.HasValue)
+        return new AllocationSection
+        {
+            limit_before = options.LimitBefore,
+            limit_after = options.LimitAfter,
+            limit_delta = options.LimitDelta.Value,
+            limit_unit = options.LimitUnit,
+            allocation_basis = GetAllocationBasisName(options.AllocationBasis),
+            rows = rows
+        };
+    }
+
+    private static string GetAllocationBasisName(AllocationBasis value)
+    {
+        return value switch
+        {
+            AllocationBasis.ToolElapsed => "tool-elapsed",
+            AllocationBasis.ToolCount => "tool-count",
+            AllocationBasis.ResponseSize => "response-size",
+            _ => value.ToString().ToLowerInvariant()
+        };
+    }
+
+    private static List<CorrelationIssueRow> BuildCorrelationIssues(
+        IReadOnlyList<ToolInvocation> toolInvocations,
+        IReadOnlyList<SubagentRun> subagentRuns)
+    {
+        var rows = new List<CorrelationIssueRow>();
+        AddIssue(rows, "tool", "missing_pre", toolInvocations.Count(x => x.CorrelationStatus == "missing_pre"));
+        AddIssue(rows, "tool", "missing_post", toolInvocations.Count(x => x.CorrelationStatus == "missing_post"));
+        AddIssue(rows, "tool", "duplicate", toolInvocations.Count(x => x.CorrelationStatus == "duplicate"));
+        AddIssue(rows, "tool", "legacy_unavailable", toolInvocations.Count(x => x.CorrelationStatus == "legacy_unavailable"));
+        AddIssue(rows, "subagent", "missing_start", subagentRuns.Count(x => x.CorrelationStatus == "missing_start"));
+        AddIssue(rows, "subagent", "missing_stop", subagentRuns.Count(x => x.CorrelationStatus == "missing_stop"));
+        AddIssue(rows, "subagent", "duplicate", subagentRuns.Count(x => x.CorrelationStatus == "duplicate"));
+        return rows;
+    }
+
+    private static void AddIssue(List<CorrelationIssueRow> rows, string area, string status, int count)
+    {
+        if (count <= 0)
+        {
+            return;
+        }
+
+        rows.Add(new CorrelationIssueRow
+        {
+            area = area,
+            status = status,
+            count = count
+        });
+    }
+
+    private static IReadOnlyList<SubagentRun> BuildSubagentRuns(
+        IReadOnlyList<UsageRecord> records,
+        List<string> warnings)
+    {
+        var pending = new Dictionary<string, UsageRecord>(StringComparer.OrdinalIgnoreCase);
+        var runs = new List<SubagentRun>();
+
+        foreach (var record in records)
+        {
+            if (record.Event.Equals("SubagentStart", StringComparison.OrdinalIgnoreCase))
             {
-                switch (record.Event)
+                var key = GetSubagentCorrelationKey(record);
+                if (key is null)
                 {
-                    case "SubagentStop":
-                        modelStat.SubagentDurationMs += record.DurationMs.Value;
-                        agentTypeStat.SubagentDurationMs += record.DurationMs.Value;
-                        break;
-                }
-            }
-
-            if (record.Event.Equals("PostToolUse", StringComparison.OrdinalIgnoreCase))
-            {
-                modelStat.ToolUseCount++;
-                agentTypeStat.ToolUseCount++;
-
-                if (record.ToolName is not null)
-                {
-                    agentTypeStat.ToolNameCounts[record.ToolName] =
-                        agentTypeStat.ToolNameCounts.TryGetValue(record.ToolName, out var toolCount) ? toolCount + 1 : 1;
+                    runs.Add(SubagentRun.FromStart(record, "unknown"));
+                    continue;
                 }
 
-                if (!string.IsNullOrWhiteSpace(record.Command))
+                if (pending.ContainsKey(key))
                 {
-                    var normalized = NormalizeCommand(record.Command);
-                    if (commandCounts.TryGetValue(normalized, out var count))
-                    {
-                        commandCounts[normalized] = count + 1;
-                    }
-                    else
-                    {
-                        commandCounts[normalized] = 1;
-                    }
+                    runs.Add(SubagentRun.FromStart(record, "duplicate"));
+                    continue;
                 }
 
-                if (record.AgentId is not null
-                    && activeSubagents.TryGetValue(record.AgentId, out var activeRun))
-                {
-                    activeRun.ToolUseCount++;
-                    if (record.ToolName is not null && record.ToolName.Equals("apply_patch", StringComparison.OrdinalIgnoreCase))
-                    {
-                        activeRun.ApplyPatchCount++;
-                    }
-
-                    if (record.ToolName is not null && record.ToolName.Equals("Bash", StringComparison.OrdinalIgnoreCase))
-                    {
-                        activeRun.BashCount++;
-                    }
-                }
-            }
-            else if (record.Event.Equals("SubagentStart", StringComparison.OrdinalIgnoreCase))
-            {
-                if (!string.IsNullOrWhiteSpace(record.AgentId))
-                {
-                    if (activeSubagents.ContainsKey(record.AgentId))
-                    {
-                        activeSubagents.Remove(record.AgentId);
-                    }
-
-                    activeSubagents[record.AgentId] = new ActiveSubagentRun
-                    {
-                        AgentId = record.AgentId,
-                        AgentType = agentType,
-                        Model = model,
-                        SessionId = record.SessionId,
-                        StartAt = record.RecordedAt,
-                        TurnId = record.TurnId
-                    };
-                }
-
-                modelStat.SubagentRunStarts++;
-                agentTypeStat.SubagentRunStarts++;
+                pending[key] = record;
             }
             else if (record.Event.Equals("SubagentStop", StringComparison.OrdinalIgnoreCase))
             {
-                modelStat.SubagentRunStops++;
-                agentTypeStat.SubagentRunStops++;
-
-                if (!string.IsNullOrWhiteSpace(record.AgentId)
-                    && activeSubagents.TryGetValue(record.AgentId, out var active))
+                var key = GetSubagentCorrelationKey(record);
+                if (key is null)
                 {
-                    var duration = record.DurationMs ?? Math.Max(
-                        0,
-                        (long)Math.Round((record.RecordedAt - active.StartAt).TotalMilliseconds));
-                    completedRuns.Add(new SubagentRunRecord
-                    {
-                        AgentId = active.AgentId,
-                        AgentType = active.AgentType,
-                        Model = active.Model,
-                        StartAt = active.StartAt,
-                        StopAt = record.RecordedAt,
-                        DurationMs = duration,
-                        ToolUseCount = active.ToolUseCount,
-                        ApplyPatchCount = active.ApplyPatchCount,
-                        BashCount = active.BashCount
-                    });
-                    activeSubagents.Remove(record.AgentId);
+                    runs.Add(SubagentRun.FromStop(record, "missing_start"));
+                    continue;
+                }
+
+                if (pending.TryGetValue(key, out var started))
+                {
+                    pending.Remove(key);
+                    runs.Add(SubagentRun.FromMatched(started, record));
+                }
+                else if (record.SubagentCorrelationStatus == "matched")
+                {
+                    runs.Add(SubagentRun.FromStop(record, "matched"));
+                }
+                else if (record.SubagentCorrelationStatus == "missing_start")
+                {
+                    runs.Add(SubagentRun.FromStop(record, "missing_start"));
                 }
                 else
                 {
-                    orphanStops.Add(new SubagentRunRecord
-                    {
-                        AgentId = record.AgentId ?? "(unknown)",
-                        AgentType = agentType,
-                        Model = model,
-                        StartAt = null,
-                        StopAt = record.RecordedAt,
-                        DurationMs = record.DurationMs,
-                        ToolUseCount = 0,
-                        ApplyPatchCount = 0,
-                        BashCount = 0
-                    });
+                    runs.Add(SubagentRun.FromStop(record, "missing_start"));
                 }
             }
+        }
 
-            var bucketStart = FloorToBucket(TimeZoneInfo.ConvertTime(record.RecordedAt, tz), bucket);
-            var timelineStats = timeline.GetOrAdd(bucketStart);
-            timelineStats.TotalEvents++;
+        foreach (var item in pending.Values)
+        {
+            runs.Add(SubagentRun.FromStart(item, "missing_stop"));
+        }
 
-            if (record.Event.Equals("PostToolUse", StringComparison.OrdinalIgnoreCase))
+        if (runs.Any(x => x.CorrelationStatus == "unknown"))
+        {
+            warnings.Add("一部の subagent event に相関キーが不足しているため、duration を復元できない。");
+        }
+
+        return runs.OrderBy(x => x.RecordedAt).ToList();
+    }
+
+    private static IReadOnlyList<ToolInvocation> BuildToolInvocations(
+        IReadOnlyList<UsageRecord> records,
+        List<string> warnings)
+    {
+        var pending = new Dictionary<string, UsageRecord>(StringComparer.OrdinalIgnoreCase);
+        var invocations = new List<ToolInvocation>();
+
+        foreach (var record in records)
+        {
+            if (record.Event.Equals("PreToolUse", StringComparison.OrdinalIgnoreCase))
             {
-                timelineStats.ToolUseCount++;
+                var key = GetToolCorrelationKey(record);
+                if (key is null)
+                {
+                    invocations.Add(ToolInvocation.FromSingle(record, "unknown"));
+                    continue;
+                }
+
+                if (pending.ContainsKey(key))
+                {
+                    invocations.Add(ToolInvocation.FromSingle(record, "duplicate"));
+                    continue;
+                }
+
+                pending[key] = record;
             }
-
-            if (record.ToolName is not null && record.ToolName.Equals("Bash", StringComparison.OrdinalIgnoreCase))
+            else if (record.Event.Equals("PostToolUse", StringComparison.OrdinalIgnoreCase))
             {
-                timelineStats.BashCount++;
-            }
+                var key = GetToolCorrelationKey(record);
+                if (key is null)
+                {
+                    invocations.Add(ToolInvocation.FromSingle(record, record.IsV2 ? "unknown" : "legacy_unavailable"));
+                    continue;
+                }
 
-            if (record.ToolName is not null && record.ToolName.Equals("apply_patch", StringComparison.OrdinalIgnoreCase))
-            {
-                timelineStats.ApplyPatchCount++;
-            }
-
-            if (record.Event.Equals("SubagentStart", StringComparison.OrdinalIgnoreCase))
-            {
-                timelineStats.SubagentStartCount++;
-            }
-
-            if (record.Event.Equals("SubagentStop", StringComparison.OrdinalIgnoreCase))
-            {
-                timelineStats.SubagentStopCount++;
+                if (pending.TryGetValue(key, out var started))
+                {
+                    pending.Remove(key);
+                    invocations.Add(ToolInvocation.FromMatched(started, record));
+                }
+                else if (record.ToolCorrelationStatus == "matched")
+                {
+                    invocations.Add(ToolInvocation.FromSingle(record, "matched"));
+                }
+                else if (record.ToolCorrelationStatus == "missing_pre")
+                {
+                    invocations.Add(ToolInvocation.FromSingle(record, "missing_pre"));
+                }
+                else
+                {
+                    invocations.Add(ToolInvocation.FromSingle(record, record.IsV2 ? "missing_pre" : "legacy_unavailable"));
+                }
             }
         }
 
-        foreach (var item in activeSubagents.Values)
+        foreach (var item in pending.Values)
         {
-            incompleteRuns.Add(new SubagentRunRecord
-            {
-                AgentId = item.AgentId,
-                AgentType = item.AgentType,
-                Model = item.Model,
-                StartAt = item.StartAt,
-                StopAt = null,
-                DurationMs = null,
-                ToolUseCount = item.ToolUseCount,
-                ApplyPatchCount = item.ApplyPatchCount,
-                BashCount = item.BashCount
-            });
+            invocations.Add(ToolInvocation.FromSingle(item, "missing_post"));
         }
 
-        var modelRows = modelStats
-            .OrderByDescending(x => x.Value.Records)
-            .Select(x => new ModelRow
-            {
-                Model = x.Key,
-                Records = x.Value.Records,
-                ToolUses = x.Value.ToolUseCount,
-                SubagentRuns = x.Value.SubagentRunStops,
-                SubagentDurationMinutes = x.Value.SubagentDurationMs / 60000.0,
-                Sessions = x.Value.Sessions.Count
-            })
-            .ToList();
-
-        var agentTypeRows = agentTypeStats
-            .OrderBy(x => x.Key.Equals("parent/unassigned", StringComparison.OrdinalIgnoreCase) ? 1 : 0)
-            .ThenByDescending(x => x.Value.SubagentRunStops)
-            .Select(x => new AgentTypeRow
-            {
-                AgentType = x.Key,
-                SubagentRuns = x.Value.SubagentRunStops,
-                ToolUses = x.Value.ToolUseCount,
-                Bash = x.Value.ToolNameCounts.TryGetValue("Bash", out var bash) ? bash : 0,
-                ApplyPatch = x.Value.ToolNameCounts.TryGetValue("apply_patch", out var applyPatch) ? applyPatch : 0,
-                TotalSubagentDurationMinutes = x.Value.SubagentDurationMs / 60000.0,
-                AvgSubagentDurationSec = x.Value.SubagentRunStops == 0
-                    ? null
-                    : x.Value.SubagentDurationMs / 1000.0 / x.Value.SubagentRunStops
-            })
-            .ToList();
-
-        var timelineRows = timeline
-            .OrderBy(x => x.Key)
-            .Select(x => new TimelineRow
-            {
-                Bucket = x.Key.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture),
-                TotalEvents = x.Value.TotalEvents,
-                ToolUses = x.Value.ToolUseCount,
-                Bash = x.Value.BashCount,
-                ApplyPatch = x.Value.ApplyPatchCount,
-                SubagentStarts = x.Value.SubagentStartCount,
-                SubagentStops = x.Value.SubagentStopCount
-            })
-            .ToList();
-
-        var topCommands = commandCounts
-            .OrderByDescending(x => x.Value)
-            .ThenBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
-            .Take(options.Top)
-            .Select(x => new KeyValuePair<string, int>(x.Key, x.Value))
-            .ToList();
-
-        var workflowChecks = BuildWorkflowChecks(options, agentTypeRows, records);
-
-        var parentApplyPatch = agentTypeRows.FirstOrDefault(x => x.AgentType == "parent/unassigned")?.ApplyPatch ?? 0;
-        var subagentDurationSec = modelRows.Sum(x => x.SubagentDurationMinutes) * 60.0;
-
-        return new UsageReport
+        if (invocations.Any(x => x.CorrelationStatus == "legacy_unavailable"))
         {
-            GeneratedAt = DateTimeOffset.UtcNow.ToString("O"),
-            Options = options,
-            PeriodFrom = filteredMin?.ToString("O"),
-            PeriodTo = filteredMax?.ToString("O"),
-            Timezone = options.Timezone,
-            ParsedRecordCount = records.Count,
-            ParseErrorCount = totalParseErrors,
-            ParseErrors = parseErrors,
-            Sessions = sessions.Count,
-            Turns = turns.Count,
-            EventCounts = eventCounts,
-            ModelRows = modelRows,
-            AgentTypeRows = agentTypeRows,
-            SubagentRuns = completedRuns
-                .Concat(orphanStops)
-                .Concat(incompleteRuns)
-                .OrderBy(x => x.StartAt ?? x.StopAt ?? DateTimeOffset.MinValue)
-                .ToList(),
-            TimelineRows = timelineRows,
-            TopCommands = topCommands,
-            WorkflowChecks = workflowChecks,
-            NotAvailableItems =
-            [
-                "Token usage (no token field in current logs).",
-                "tool execution elapsed time per command (no start time field in PostToolUse logs).",
-                "Bash exit code (tool success result is not stored in current logger)."
-            ],
-            ParentApplyPatchCount = parentApplyPatch,
-            TotalSubagentDurationMinutes = subagentDurationSec / 60.0,
-            IncompleteSubagentRuns = incompleteRuns.Count,
-            OrphanSubagentStops = orphanStops.Count
+            warnings.Add("旧 agent-usage ログ行の PostToolUse は PreToolUse 相関なしで集計した。");
+        }
+
+        return invocations.OrderBy(x => x.RecordedAt).ToList();
+    }
+
+    private static string? GetToolCorrelationKey(UsageRecord record)
+    {
+        if (string.IsNullOrWhiteSpace(record.ToolUseId))
+        {
+            return null;
+        }
+
+        return string.Join("|", record.SessionId ?? "-", record.TurnId ?? "-", record.AgentId ?? "parent", record.ToolUseId);
+    }
+
+    private static string? GetSubagentCorrelationKey(UsageRecord record)
+    {
+        if (string.IsNullOrWhiteSpace(record.SessionId) || string.IsNullOrWhiteSpace(record.AgentId))
+        {
+            return null;
+        }
+
+        return string.Join("|", record.SessionId, record.AgentId);
+    }
+
+    private static void AddRecord(WorkAccumulator accumulator, UsageRecord record)
+    {
+        accumulator.Events++;
+        accumulator.EventCounts.Increment(record.Event);
+    }
+
+    private static void AddInvocation(WorkAccumulator accumulator, ToolInvocation invocation, Dictionary<string, int>? summaryCommandKinds)
+    {
+        accumulator.ToolInvocations++;
+        if (invocation.CorrelationStatus == "matched")
+        {
+            accumulator.MatchedToolInvocations++;
+        }
+
+        if (invocation.CorrelationStatus is "missing_pre" or "missing_post" or "duplicate")
+        {
+            accumulator.MissingCorrelationCount++;
+        }
+
+        accumulator.TotalToolElapsedMs += invocation.ToolElapsedMs ?? 0;
+        accumulator.ToolInputBytes += invocation.ToolInputBytes ?? 0;
+        accumulator.ToolResponseBytes += invocation.ToolResponseBytes ?? 0;
+        accumulator.ToolNameCounts.Increment(invocation.ToolKey);
+
+        if (!string.IsNullOrWhiteSpace(invocation.CommandKind))
+        {
+            accumulator.CommandKindCounts.Increment(invocation.CommandKind);
+            summaryCommandKinds?.Increment(invocation.CommandKind);
+        }
+
+        if (invocation.ToolKey.Equals("Bash", StringComparison.OrdinalIgnoreCase) ||
+            invocation.ToolKey.Equals("shell_command", StringComparison.OrdinalIgnoreCase))
+        {
+            accumulator.BashCount++;
+        }
+
+        if (invocation.ToolKey.Equals("apply_patch", StringComparison.OrdinalIgnoreCase))
+        {
+            accumulator.ApplyPatchCount++;
+        }
+    }
+
+    private static void AddSubagentRun(WorkAccumulator accumulator, SubagentRun run)
+    {
+        accumulator.SubagentRuns++;
+        if (run.CorrelationStatus is "missing_start" or "missing_stop" or "duplicate")
+        {
+            accumulator.MissingCorrelationCount++;
+        }
+
+        accumulator.TotalSubagentDurationMs += run.DurationMs ?? 0;
+    }
+
+    private static List<KeyValuePair<string, WorkAccumulator>> BuildRows(Dictionary<string, WorkAccumulator> source)
+    {
+        foreach (var entry in source.Values)
+        {
+            entry.WeightedWorkScore = CalculateWeightedScore(entry);
+        }
+
+        return source.ToList();
+    }
+
+    private static double CalculateWeightedScore(WorkAccumulator value)
+    {
+        return value.TotalToolElapsedMs
+            + value.TotalSubagentDurationMs
+            + (value.ToolInvocations * 750d)
+            + (value.ApplyPatchCount * 1_500d)
+            + (value.BashCount * 500d)
+            + (value.ToolInputBytes / 10d)
+            + (value.ToolResponseBytes / 20d);
+    }
+
+    private static WorkRow CreateWorkRow(string name, WorkAccumulator value)
+    {
+        return new WorkRow
+        {
+            name = name,
+            events = value.Events,
+            tool_invocations = value.ToolInvocations,
+            matched_tool_invocations = value.MatchedToolInvocations,
+            missing_correlation = value.MissingCorrelationCount,
+            total_tool_elapsed_ms = value.TotalToolElapsedMs,
+            total_subagent_duration_ms = value.TotalSubagentDurationMs,
+            bash_count = value.BashCount,
+            apply_patch_count = value.ApplyPatchCount,
+            tool_input_bytes = value.ToolInputBytes,
+            tool_response_bytes = value.ToolResponseBytes,
+            weighted_work_score = Math.Round(value.WeightedWorkScore, 3),
+            weighted_work_share = 0,
+            command_kind_counts = new Dictionary<string, int>(value.CommandKindCounts, StringComparer.OrdinalIgnoreCase),
+            event_counts = new Dictionary<string, int>(value.EventCounts, StringComparer.OrdinalIgnoreCase)
         };
+    }
+
+    private static void NormalizeShares(List<WorkRow> rows)
+    {
+        var total = rows.Sum(x => x.weighted_work_score);
+        foreach (var row in rows)
+        {
+            row.weighted_work_share = total <= 0 ? 0 : row.weighted_work_score / total;
+        }
     }
 
     private static IEnumerable<(UsageRecord? record, ParseError? parseError)> ReadLogFile(string path)
@@ -715,7 +932,6 @@ internal static class UsageReportGenerator
 
         using var reader = new StreamReader(path, Encoding.UTF8);
         var lineNumber = 0;
-
         while (true)
         {
             var line = reader.ReadLine();
@@ -734,25 +950,22 @@ internal static class UsageReportGenerator
         }
     }
 
-    private static (UsageRecord?, ParseError?) ParseLine(string line, string path, int lineNumber)
+    private static (UsageRecord? record, ParseError? parseError) ParseLine(string line, string path, int lineNumber)
     {
         try
         {
-            using var doc = JsonDocument.Parse(line);
-            var parsed = ParseRecord(doc.RootElement);
-            return parsed is null ? (null, null) : (parsed, null);
+            using var document = JsonDocument.Parse(line);
+            return (ParseRecord(document.RootElement), null);
         }
         catch (JsonException ex)
         {
-            return (
-                null,
-                new ParseError
-                {
-                    SourcePath = path,
-                    Line = lineNumber,
-                    Message = ex.Message,
-                    Exception = ex.ToString()
-                });
+            return (null, new ParseError
+            {
+                source_path = path,
+                line = lineNumber,
+                message = ex.Message,
+                exception = ex.ToString()
+            });
         }
     }
 
@@ -764,25 +977,56 @@ internal static class UsageReportGenerator
             return null;
         }
 
-        var duration = GetInt64(element, "duration_ms");
+        var schemaVersion = GetString(element, "schema_version");
+        var isV2 = string.Equals(schemaVersion, "2.0", StringComparison.OrdinalIgnoreCase);
+        var durationMs = GetInt64(element, "subagent_duration_ms") ?? GetInt64(element, "duration_ms");
         return new UsageRecord
         {
+            SchemaVersion = schemaVersion,
+            IsV2 = isV2,
             RecordedAt = recordedAt.Value,
             Event = GetString(element, "event") ?? "Unknown",
             SessionId = GetString(element, "session_id"),
             TurnId = GetString(element, "turn_id"),
-            AgentId = GetString(element, "agent_id"),
+            AgentId = NormalizeAgentId(GetString(element, "agent_id")),
             AgentType = GetString(element, "agent_type"),
             Model = GetString(element, "model"),
-            PermissionMode = GetString(element, "permission_mode"),
             Cwd = GetString(element, "cwd"),
+            RepoRoot = GetString(element, "repo_root"),
+            RepoName = GetString(element, "repo_name"),
+            GitBranch = GetString(element, "git_branch"),
+            GitCommit = GetString(element, "git_commit"),
+            PermissionMode = GetString(element, "permission_mode"),
             TranscriptPath = GetString(element, "transcript_path"),
-            DurationMs = duration,
+            ToolUseId = GetString(element, "tool_use_id"),
             ToolName = GetString(element, "tool_name"),
-            Command = GetString(element, "command"),
+            ToolCategory = GetString(element, "tool_category"),
+            Command = GetString(element, "command_redacted") ?? GetString(element, "command"),
+            CommandKind = GetString(element, "command_kind"),
+            CommandRisk = GetString(element, "command_risk"),
+            ToolResultClass = GetString(element, "tool_result_class"),
+            ToolElapsedMs = GetInt64(element, "tool_elapsed_ms"),
+            ToolCorrelationStatus = GetString(element, "tool_correlation_status"),
+            ToolInputSize = GetInt64(element, "tool_input_size"),
             ToolResponseSize = GetInt64(element, "tool_response_size"),
-            ToolResponsePreview = GetString(element, "tool_response_preview")
+            SubagentRunId = GetString(element, "subagent_run_id"),
+            SubagentDurationMs = durationMs,
+            SubagentCorrelationStatus = GetString(element, "subagent_correlation_status"),
+            StartedAt = GetDateTimeOffset(element, "subagent_started_at"),
+            StoppedAt = GetDateTimeOffset(element, "subagent_stopped_at")
         };
+    }
+
+    private static string? NormalizeAgentId(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        return value.Equals("00000000-0000-0000-0000-000000000000", StringComparison.OrdinalIgnoreCase)
+            ? null
+            : value;
     }
 
     private static bool IsInRange(DateTimeOffset value, DateTimeOffset? from, DateTimeOffset? to)
@@ -802,14 +1046,14 @@ internal static class UsageReportGenerator
 
     private static bool MatchesFilter(UsageRecord record, UsageOptions options)
     {
-        if (!string.IsNullOrWhiteSpace(options.SessionIdFilter)
-            && !string.Equals(record.SessionId, options.SessionIdFilter, StringComparison.OrdinalIgnoreCase))
+        if (!string.IsNullOrWhiteSpace(options.SessionIdFilter) &&
+            !string.Equals(record.SessionId, options.SessionIdFilter, StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
 
-        if (!string.IsNullOrWhiteSpace(options.CwdContains)
-            && !((record.Cwd ?? string.Empty).Contains(options.CwdContains!, StringComparison.OrdinalIgnoreCase)))
+        if (!string.IsNullOrWhiteSpace(options.CwdContains) &&
+            !(record.Cwd ?? string.Empty).Contains(options.CwdContains, StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
@@ -820,14 +1064,8 @@ internal static class UsageReportGenerator
     private static DateTimeOffset FloorToBucket(DateTimeOffset value, TimeSpan bucket)
     {
         var bucketTicks = bucket.Ticks;
-        if (bucketTicks <= 0)
-        {
-            return value;
-        }
-
-        var localDateTime = value.ToOffset(value.Offset).DateTime;
-        var flooredTicks = (localDateTime.Ticks / bucketTicks) * bucketTicks;
-        return new DateTimeOffset(new DateTime(flooredTicks, localDateTime.Kind), value.Offset);
+        var flooredTicks = (value.Ticks / bucketTicks) * bucketTicks;
+        return new DateTimeOffset(flooredTicks, value.Offset);
     }
 
     private static TimeZoneInfo ResolveTimeZone(string value)
@@ -848,495 +1086,674 @@ internal static class UsageReportGenerator
         }
         catch (Exception ex) when (ex is TimeZoneNotFoundException or InvalidTimeZoneException)
         {
-            if (IanaTimezoneAlias.TryGetValue(value, out var windowsId))
+            if (IanaTimezoneAlias.TryGetValue(value, out var alias))
             {
-                return TimeZoneInfo.FindSystemTimeZoneById(windowsId);
+                return TimeZoneInfo.FindSystemTimeZoneById(alias);
             }
 
             throw;
         }
     }
 
-    private static List<WorkflowCheck> BuildWorkflowChecks(
-        UsageOptions options,
-        List<AgentTypeRow> agentTypeRows,
-        IReadOnlyList<UsageRecord> records)
-    {
-        var checks = new List<WorkflowCheck>();
-        int GetRuns(string agentType)
-        {
-            return agentTypeRows.FirstOrDefault(x => x.AgentType.Equals(agentType, StringComparison.OrdinalIgnoreCase))?.SubagentRuns ?? 0;
-        }
-
-        var slicePrepRuns = GetRuns("slice-prep");
-        checks.Add(new WorkflowCheck(
-            "slice-prep ran",
-            slicePrepRuns > 0 ? "PASS" : "WARN",
-            $"slice-prep runs = {slicePrepRuns}"
-        ));
-
-        var sliceImplRuns = GetRuns("slice-impl");
-        checks.Add(new WorkflowCheck(
-            "slice-impl ran",
-            sliceImplRuns > 0 ? "PASS" : "WARN",
-            $"slice-impl runs = {sliceImplRuns}"
-        ));
-
-        var crossChecks = GetRuns("cross-slice-verification-kernel");
-        checks.Add(new WorkflowCheck(
-            "cross-slice verification ran",
-            crossChecks > 0 ? "PASS" : "WARN",
-            $"cross-slice-verification-kernel runs = {crossChecks}"
-        ));
-
-        var residualRuns = GetRuns("residual-decision-gate");
-        checks.Add(new WorkflowCheck(
-            "residual decision gate ran",
-            residualRuns > 0 ? "PASS" : "INFO",
-            $"residual-decision-gate runs = {residualRuns}"
-        ));
-
-        var parentApplyPatch = agentTypeRows.FirstOrDefault(x => x.AgentType.Equals("parent/unassigned", StringComparison.OrdinalIgnoreCase))?.ApplyPatch ?? 0;
-        checks.Add(new WorkflowCheck(
-            "parent direct apply_patch",
-            parentApplyPatch == 0 ? "PASS" : "WARN",
-            $"parent/unassigned apply_patch = {parentApplyPatch}"
-        ));
-
-        if (!string.IsNullOrWhiteSpace(options.ExpectedParentModel))
-        {
-            var observed = MostFrequentModel(records.Where(x => string.IsNullOrWhiteSpace(x.AgentType)));
-            if (observed is null)
-            {
-                checks.Add(new WorkflowCheck(
-                    "parent model",
-                    "WARN",
-                    "no parent model data in scope"
-                ));
-            }
-            else
-            {
-                var result = observed.Equals(options.ExpectedParentModel, StringComparison.OrdinalIgnoreCase) ? "PASS" : "WARN";
-                checks.Add(new WorkflowCheck(
-                    "parent model",
-                    result,
-                    $"expected={options.ExpectedParentModel}, observed={observed}"
-                ));
-            }
-        }
-
-        if (!string.IsNullOrWhiteSpace(options.ExpectedSubagentModel))
-        {
-            var observedSubagent = MostFrequentModel(records.Where(x => !string.IsNullOrWhiteSpace(x.AgentType) && !x.AgentType!.Equals("parent/unassigned", StringComparison.OrdinalIgnoreCase)));
-            if (observedSubagent is null)
-            {
-                checks.Add(new WorkflowCheck(
-                    "subagent model",
-                    "WARN",
-                    "no subagent model data in scope"
-                ));
-            }
-            else
-            {
-                var result = observedSubagent.Equals(options.ExpectedSubagentModel, StringComparison.OrdinalIgnoreCase) ? "PASS" : "WARN";
-                checks.Add(new WorkflowCheck(
-                    "subagent model",
-                    result,
-                    $"expected={options.ExpectedSubagentModel}, observed={observedSubagent}"
-                ));
-            }
-        }
-
-        return checks;
-    }
-
-    private static string? MostFrequentModel(IEnumerable<UsageRecord> records)
-    {
-        return records
-            .Select(x => x.Model)
-            .Where(x => !string.IsNullOrWhiteSpace(x))
-            .GroupBy(x => x, StringComparer.OrdinalIgnoreCase)
-            .OrderByDescending(x => x.Count())
-            .Select(x => x.Key)
-            .FirstOrDefault();
-    }
-
-    private static string NormalizeCommand(string command)
-    {
-        var compact = command.Replace("\r", " ", StringComparison.Ordinal).Replace("\n", " ", StringComparison.Ordinal).Trim();
-        if (compact.Length > 80)
-        {
-            compact = compact[..80] + "...";
-        }
-
-        return compact;
-    }
-
     private static string? GetString(JsonElement element, string propertyName)
     {
-        if (!element.TryGetProperty(propertyName, out var value))
+        if (!element.TryGetProperty(propertyName, out var property))
         {
             return null;
         }
 
-        return value.ValueKind switch
+        return property.ValueKind switch
         {
-            JsonValueKind.String => value.GetString(),
+            JsonValueKind.String => property.GetString(),
             JsonValueKind.Null => null,
             JsonValueKind.True => "true",
             JsonValueKind.False => "false",
-            _ => value.ToString()
+            _ => property.ToString()
         };
     }
 
     private static long? GetInt64(JsonElement element, string propertyName)
     {
-        if (!element.TryGetProperty(propertyName, out var value))
+        if (!element.TryGetProperty(propertyName, out var property))
         {
             return null;
         }
 
-        return value.ValueKind switch
+        return property.ValueKind switch
         {
-            JsonValueKind.Number => value.GetInt64(),
-            JsonValueKind.String when long.TryParse(value.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) => parsed,
+            JsonValueKind.Number => property.GetInt64(),
+            JsonValueKind.String when long.TryParse(property.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) => parsed,
             _ => null
         };
     }
 
     private static DateTimeOffset? GetDateTimeOffset(JsonElement element, string propertyName)
     {
-        if (!element.TryGetProperty(propertyName, out var value))
+        if (!element.TryGetProperty(propertyName, out var property))
         {
             return null;
         }
 
-        if (value.ValueKind == JsonValueKind.String && DateTimeOffset.TryParse(value.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var parsed))
+        if (property.ValueKind == JsonValueKind.String &&
+            DateTimeOffset.TryParse(property.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var parsed))
         {
             return parsed;
         }
 
-        if (value.ValueKind == JsonValueKind.String && DateTimeOffset.TryParse(value.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var parsed2))
-        {
-            return parsed2;
-        }
-
         return null;
+    }
+
+    private static void Increment(Dictionary<string, int> source, string key)
+    {
+        if (source.TryGetValue(key, out var count))
+        {
+            source[key] = count + 1;
+        }
+        else
+        {
+            source[key] = 1;
+        }
     }
 }
 
-internal sealed class UsageReport
+internal sealed class UsageReportOutput
 {
-    public string GeneratedAt { get; set; } = string.Empty;
-    [JsonIgnore]
-    public UsageOptions Options { get; set; } = null!;
-    public string? PeriodFrom { get; set; }
-    public string? PeriodTo { get; set; }
-    public string Timezone { get; set; } = "local";
-    public int ParsedRecordCount { get; set; }
-    public int ParseErrorCount { get; set; }
-    public List<ParseError> ParseErrors { get; set; } = [];
-    public int Sessions { get; set; }
-    public int Turns { get; set; }
-    public Dictionary<string, int> EventCounts { get; set; } = [];
-    public List<ModelRow> ModelRows { get; set; } = [];
-    public List<AgentTypeRow> AgentTypeRows { get; set; } = [];
-    public List<SubagentRunRecord> SubagentRuns { get; set; } = [];
-    public List<TimelineRow> TimelineRows { get; set; } = [];
-    public List<KeyValuePair<string, int>> TopCommands { get; set; } = [];
-    public List<WorkflowCheck> WorkflowChecks { get; set; } = [];
-    public List<string> NotAvailableItems { get; set; } = [];
-    public int ParentApplyPatchCount { get; set; }
-    public double TotalSubagentDurationMinutes { get; set; }
-    public int IncompleteSubagentRuns { get; set; }
-    public int OrphanSubagentStops { get; set; }
+    public SummarySection summary { get; set; } = new();
+    public List<WorkRow> model_rows { get; set; } = [];
+    public List<WorkRow> agent_type_rows { get; set; } = [];
+    public List<WorkRow> tool_rows { get; set; } = [];
+    public List<WorkRow> repository_rows { get; set; } = [];
+    public List<WorkRow> timeline_rows { get; set; } = [];
+    public List<CorrelationIssueRow> correlation_issues { get; set; } = [];
+    public AllocationSection? allocation { get; set; }
+    public List<string> warnings { get; set; } = [];
+    public List<string> not_available { get; set; } = [];
+    public List<ParseError> parse_errors { get; set; } = [];
 
     public string ToJson()
     {
-        var options = new JsonSerializerOptions
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true }))
         {
-            WriteIndented = true
-        };
+            writer.WriteStartObject();
 
-        var json = JsonSerializer.Serialize(this, options);
-        return json;
+            writer.WritePropertyName("summary");
+            WriteSummary(writer, summary);
+
+            writer.WritePropertyName("model_rows");
+            WriteWorkRows(writer, model_rows);
+
+            writer.WritePropertyName("agent_type_rows");
+            WriteWorkRows(writer, agent_type_rows);
+
+            writer.WritePropertyName("tool_rows");
+            WriteWorkRows(writer, tool_rows);
+
+            writer.WritePropertyName("repository_rows");
+            WriteWorkRows(writer, repository_rows);
+
+            writer.WritePropertyName("timeline_rows");
+            WriteWorkRows(writer, timeline_rows);
+
+            writer.WritePropertyName("correlation_issues");
+            writer.WriteStartArray();
+            foreach (var item in correlation_issues)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("area", item.area);
+                writer.WriteString("status", item.status);
+                writer.WriteNumber("count", item.count);
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndArray();
+
+            writer.WritePropertyName("allocation");
+            if (allocation is null)
+            {
+                writer.WriteNullValue();
+            }
+            else
+            {
+                WriteAllocation(writer, allocation);
+            }
+
+            writer.WritePropertyName("warnings");
+            WriteStringArray(writer, warnings);
+
+            writer.WritePropertyName("not_available");
+            WriteStringArray(writer, not_available);
+
+            writer.WritePropertyName("parse_errors");
+            writer.WriteStartArray();
+            foreach (var item in parse_errors)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("source_path", item.source_path);
+                writer.WriteNumber("line", item.line);
+                writer.WriteString("message", item.message);
+                writer.WriteString("exception", item.exception);
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+        }
+
+        return Encoding.UTF8.GetString(stream.ToArray());
     }
 
     public string ToMarkdown()
     {
         var sb = new StringBuilder();
-        sb.AppendLine("# Codex Usage Report");
+        sb.AppendLine("# Codex Observation Report");
         sb.AppendLine();
-        sb.AppendLine($"Generated: {GeneratedAt}");
-        if (PeriodFrom is not null || PeriodTo is not null)
-        {
-            sb.AppendLine($"Period: {PeriodFrom ?? "-"} - {PeriodTo ?? "-"}");
-        }
-        else
-        {
-            sb.AppendLine("Period: no records");
-        }
-
-        sb.AppendLine($"Timezone: {Timezone}");
+        sb.AppendLine($"Generated: {summary.generated_at}");
+        sb.AppendLine($"Period: {summary.period_from ?? "-"} - {summary.period_to ?? "-"}");
+        sb.AppendLine($"Timezone: {summary.timezone}");
         sb.AppendLine();
-        sb.AppendLine("## Overview");
+        sb.AppendLine("## Summary");
         sb.AppendLine();
         sb.AppendLine("| Metric | Value |");
         sb.AppendLine("|---|---:|");
-        sb.AppendLine($"| Parsed records | {ParsedRecordCount} |");
-        sb.AppendLine($"| Parse errors | {ParseErrorCount} |");
-        sb.AppendLine($"| Sessions | {Sessions} |");
-        sb.AppendLine($"| Turns | {Turns} |");
-        sb.AppendLine($"| parent/unassigned apply_patch | {ParentApplyPatchCount} |");
-        sb.AppendLine($"| incomplete subagent runs | {IncompleteSubagentRuns} |");
-        sb.AppendLine($"| orphan subagent stops | {OrphanSubagentStops} |");
-        sb.AppendLine($"| total subagent duration (min) | {TotalSubagentDurationMinutes:F1} |");
-        sb.AppendLine();
-
-        sb.AppendLine("| Event | Count |");
-        sb.AppendLine("|---|---:|");
-        foreach (var item in EventCounts.OrderByDescending(x => x.Value).ThenBy(x => x.Key, StringComparer.Ordinal))
+        sb.AppendLine($"| Parsed records | {summary.parsed_records} |");
+        sb.AppendLine($"| Parse errors | {summary.parse_errors} |");
+        sb.AppendLine($"| Sessions | {summary.sessions} |");
+        sb.AppendLine($"| Turns | {summary.turns} |");
+        sb.AppendLine($"| Repositories | {summary.repositories} |");
+        sb.AppendLine($"| Models | {summary.models} |");
+        sb.AppendLine($"| Tool invocations | {summary.tool_invocations} |");
+        sb.AppendLine($"| Matched tool invocations | {summary.matched_tool_invocations} |");
+        sb.AppendLine($"| missing_pre | {summary.missing_pre} |");
+        sb.AppendLine($"| missing_post | {summary.missing_post} |");
+        sb.AppendLine($"| missing_start | {summary.missing_start} |");
+        sb.AppendLine($"| missing_stop | {summary.missing_stop} |");
+        sb.AppendLine($"| Weighted score total | {summary.weighted_score_total:F1} |");
+        if (summary.limit_delta.HasValue)
         {
-            sb.AppendLine($"| {item.Key} | {item.Value} |");
+            sb.AppendLine($"| Limit delta | {summary.limit_delta.Value.ToString("F3", CultureInfo.InvariantCulture)} {summary.limit_unit} |");
         }
 
         sb.AppendLine();
         sb.AppendLine("## By model");
-        sb.AppendLine();
-        sb.AppendLine("| Model | Records | Tool uses | Subagent runs | Subagent duration (min) | Sessions |");
-        sb.AppendLine("|---|---:|---:|---:|---:|---:|");
-        foreach (var row in ModelRows)
-        {
-            sb.AppendLine(
-                $"| {row.Model} | {row.Records} | {row.ToolUses} | {row.SubagentRuns} | {row.SubagentDurationMinutes:F1} | {row.Sessions} |");
-        }
-
+        AppendWorkTable(sb, model_rows);
         sb.AppendLine();
         sb.AppendLine("## By agent type");
+        AppendWorkTable(sb, agent_type_rows);
         sb.AppendLine();
-        sb.AppendLine("| Agent type | Subagent runs | Tool uses | Bash | apply_patch | Total subagent duration (min) | Avg subagent duration (sec) |");
-        sb.AppendLine("|---|---:|---:|---:|---:|---:|---:|");
-        foreach (var row in AgentTypeRows)
-        {
-            sb.AppendLine(
-                $"| {row.AgentType} | {row.SubagentRuns} | {row.ToolUses} | {row.Bash} | {row.ApplyPatch} | {row.TotalSubagentDurationMinutes:F1} | {(row.AvgSubagentDurationSec.HasValue ? row.AvgSubagentDurationSec.Value.ToString("F1", CultureInfo.InvariantCulture) : "-")} |");
-        }
-
+        sb.AppendLine("## By tool");
+        AppendWorkTable(sb, tool_rows);
         sb.AppendLine();
-        sb.AppendLine("## Subagent runs");
-        sb.AppendLine();
-        sb.AppendLine("| Start | End | Agent type | Agent ID | Model | Duration | Tool uses | apply_patch |");
-        sb.AppendLine("|---|---|---|---|---|---:|---:|---:|");
-        foreach (var row in SubagentRuns)
-        {
-            sb.AppendLine(
-                $"| {ToDisplayDate(row.StartAt)} | {ToDisplayDate(row.StopAt)} | {row.AgentType} | {row.AgentId} | {row.Model} | {FormatDuration(row.DurationMs)} | {row.ToolUseCount} | {row.ApplyPatchCount} |");
-        }
-
+        sb.AppendLine("## By repository");
+        AppendWorkTable(sb, repository_rows);
         sb.AppendLine();
         sb.AppendLine("## Timeline");
-        sb.AppendLine();
-        sb.AppendLine("| Bucket | Total events | Tool uses | Bash | apply_patch | Subagent starts | Subagent stops |");
-        sb.AppendLine("|---|---:|---:|---:|---:|---:|---:|");
-        foreach (var row in TimelineRows)
-        {
-            sb.AppendLine(
-                $"| {row.Bucket} | {row.TotalEvents} | {row.ToolUses} | {row.Bash} | {row.ApplyPatch} | {row.SubagentStarts} | {row.SubagentStops} |");
-        }
+        AppendWorkTable(sb, timeline_rows);
 
-        sb.AppendLine();
-        sb.AppendLine($"## Top {TopCommands.Count} commands");
-        sb.AppendLine();
-        sb.AppendLine("| Command | Count |");
-        sb.AppendLine("|---|---:|");
-        foreach (var item in TopCommands)
-        {
-            sb.AppendLine($"| `{item.Key}` | {item.Value} |");
-        }
-
-        sb.AppendLine();
-        sb.AppendLine("## Workflow check");
-        sb.AppendLine();
-        sb.AppendLine("| Check | Result | Evidence |");
-        sb.AppendLine("|---|---|---|");
-        foreach (var item in WorkflowChecks)
-        {
-            sb.AppendLine($"| {item.Check} | {item.Result} | {item.Evidence} |");
-        }
-
-        if (ParseErrors.Count > 0)
+        if (correlation_issues.Count > 0)
         {
             sb.AppendLine();
-            sb.AppendLine("## Parse errors (sample)");
+            sb.AppendLine("## Correlation issues");
             sb.AppendLine();
-            sb.AppendLine("| Source | Line | Message |");
-            sb.AppendLine("|---|---:|---|");
-            foreach (var item in ParseErrors.Take(20))
+            sb.AppendLine("| Area | Status | Count |");
+            sb.AppendLine("|---|---|---:|");
+            foreach (var item in correlation_issues)
             {
-                sb.AppendLine($"| {item.SourcePath} | {item.Line} | {item.Message} |");
+                sb.AppendLine($"| {item.area} | {item.status} | {item.count} |");
             }
         }
 
-        sb.AppendLine();
-        sb.AppendLine("## Not available in current log schema");
-        sb.AppendLine();
-        foreach (var item in NotAvailableItems)
+        if (allocation is not null)
         {
-            sb.AppendLine($"- {item}");
+            sb.AppendLine();
+            sb.AppendLine("## Limit delta allocation");
+            sb.AppendLine();
+            sb.AppendLine($"Basis: `{allocation.allocation_basis}`");
+            sb.AppendLine();
+            sb.AppendLine("| Model | Basis value | Share | Estimated delta |");
+            sb.AppendLine("|---|---:|---:|---:|");
+            foreach (var row in allocation.rows.OrderByDescending(x => x.estimated_limit_delta))
+            {
+                sb.AppendLine(
+                    $"| {row.model} | {row.basis_value.ToString("F3", CultureInfo.InvariantCulture)} | {(row.share * 100).ToString("F1", CultureInfo.InvariantCulture)}% | {row.estimated_limit_delta.ToString("F3", CultureInfo.InvariantCulture)} |");
+            }
+        }
+
+        if (warnings.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("## Warnings");
+            sb.AppendLine();
+            foreach (var item in warnings)
+            {
+                sb.AppendLine($"- {item}");
+            }
+        }
+
+        if (not_available.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("## Not available");
+            sb.AppendLine();
+            foreach (var item in not_available)
+            {
+                sb.AppendLine($"- {item}");
+            }
+        }
+
+        if (parse_errors.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("## Parse errors");
+            sb.AppendLine();
+            sb.AppendLine("| Source | Line | Message |");
+            sb.AppendLine("|---|---:|---|");
+            foreach (var item in parse_errors.Take(20))
+            {
+                sb.AppendLine($"| {item.source_path} | {item.line} | {item.message} |");
+            }
         }
 
         return sb.ToString();
     }
 
-    private static string ToDisplayDate(DateTimeOffset? value)
+    private static void AppendWorkTable(StringBuilder sb, List<WorkRow> rows)
     {
-        return value?.ToString("O", CultureInfo.InvariantCulture) ?? "-";
+        sb.AppendLine();
+        sb.AppendLine("| Name | Events | Tool invocations | Matched | Missing corr | Tool elapsed (s) | Subagent duration (s) | Score | Share | Cmd kinds |");
+        sb.AppendLine("|---|---:|---:|---:|---:|---:|---:|---:|---:|---|");
+        foreach (var row in rows)
+        {
+            sb.AppendLine(
+                $"| {row.name} | {row.events} | {row.tool_invocations} | {row.matched_tool_invocations} | {row.missing_correlation} | {(row.total_tool_elapsed_ms / 1000d).ToString("F1", CultureInfo.InvariantCulture)} | {(row.total_subagent_duration_ms / 1000d).ToString("F1", CultureInfo.InvariantCulture)} | {row.weighted_work_score.ToString("F1", CultureInfo.InvariantCulture)} | {(row.weighted_work_share * 100).ToString("F1", CultureInfo.InvariantCulture)}% | {FormatCommandKinds(row.command_kind_counts)} |");
+        }
     }
 
-    private static string FormatDuration(long? ms)
+    private static string FormatCommandKinds(Dictionary<string, int> value)
     {
-        if (!ms.HasValue)
+        if (value.Count == 0)
         {
             return "-";
         }
 
-        var totalSec = ms.Value / 1000.0;
-        return $"{totalSec:F1}s";
+        return string.Join(", ", value.OrderByDescending(x => x.Value).ThenBy(x => x.Key, StringComparer.OrdinalIgnoreCase).Select(x => $"{x.Key}:{x.Value}"));
+    }
+
+    private static void WriteSummary(Utf8JsonWriter writer, SummarySection value)
+    {
+        writer.WriteStartObject();
+        writer.WriteString("generated_at", value.generated_at);
+        WriteNullableString(writer, "period_from", value.period_from);
+        WriteNullableString(writer, "period_to", value.period_to);
+        writer.WriteString("timezone", value.timezone);
+        writer.WriteNumber("parsed_records", value.parsed_records);
+        writer.WriteNumber("parse_errors", value.parse_errors);
+        writer.WriteNumber("sessions", value.sessions);
+        writer.WriteNumber("turns", value.turns);
+        writer.WriteNumber("repositories", value.repositories);
+        writer.WriteNumber("models", value.models);
+        writer.WriteNumber("tool_invocations", value.tool_invocations);
+        writer.WriteNumber("matched_tool_invocations", value.matched_tool_invocations);
+        writer.WriteNumber("missing_pre", value.missing_pre);
+        writer.WriteNumber("missing_post", value.missing_post);
+        writer.WriteNumber("duplicate_tool", value.duplicate_tool);
+        writer.WriteNumber("subagent_runs", value.subagent_runs);
+        writer.WriteNumber("missing_start", value.missing_start);
+        writer.WriteNumber("missing_stop", value.missing_stop);
+        writer.WriteNumber("weighted_score_total", value.weighted_score_total);
+        writer.WritePropertyName("command_kind_counts");
+        WriteIntDictionary(writer, value.command_kind_counts);
+        writer.WritePropertyName("event_counts");
+        WriteIntDictionary(writer, value.event_counts);
+        WriteNullableDouble(writer, "limit_delta", value.limit_delta);
+        WriteNullableString(writer, "limit_unit", value.limit_unit);
+        writer.WriteEndObject();
+    }
+
+    private static void WriteWorkRows(Utf8JsonWriter writer, List<WorkRow> rows)
+    {
+        writer.WriteStartArray();
+        foreach (var row in rows)
+        {
+            writer.WriteStartObject();
+            writer.WriteString("name", row.name);
+            writer.WriteNumber("events", row.events);
+            writer.WriteNumber("tool_invocations", row.tool_invocations);
+            writer.WriteNumber("matched_tool_invocations", row.matched_tool_invocations);
+            writer.WriteNumber("missing_correlation", row.missing_correlation);
+            writer.WriteNumber("total_tool_elapsed_ms", row.total_tool_elapsed_ms);
+            writer.WriteNumber("total_subagent_duration_ms", row.total_subagent_duration_ms);
+            writer.WriteNumber("bash_count", row.bash_count);
+            writer.WriteNumber("apply_patch_count", row.apply_patch_count);
+            writer.WriteNumber("tool_input_bytes", row.tool_input_bytes);
+            writer.WriteNumber("tool_response_bytes", row.tool_response_bytes);
+            writer.WriteNumber("weighted_work_score", row.weighted_work_score);
+            writer.WriteNumber("weighted_work_share", row.weighted_work_share);
+            writer.WritePropertyName("command_kind_counts");
+            WriteIntDictionary(writer, row.command_kind_counts);
+            writer.WritePropertyName("event_counts");
+            WriteIntDictionary(writer, row.event_counts);
+            writer.WriteEndObject();
+        }
+
+        writer.WriteEndArray();
+    }
+
+    private static void WriteAllocation(Utf8JsonWriter writer, AllocationSection value)
+    {
+        writer.WriteStartObject();
+        WriteNullableDouble(writer, "limit_before", value.limit_before);
+        WriteNullableDouble(writer, "limit_after", value.limit_after);
+        writer.WriteNumber("limit_delta", value.limit_delta);
+        writer.WriteString("limit_unit", value.limit_unit);
+        writer.WriteString("allocation_basis", value.allocation_basis);
+        writer.WritePropertyName("rows");
+        writer.WriteStartArray();
+        foreach (var row in value.rows)
+        {
+            writer.WriteStartObject();
+            writer.WriteString("model", row.model);
+            writer.WriteNumber("basis_value", row.basis_value);
+            writer.WriteNumber("share", row.share);
+            writer.WriteNumber("estimated_limit_delta", row.estimated_limit_delta);
+            writer.WriteEndObject();
+        }
+
+        writer.WriteEndArray();
+        writer.WriteEndObject();
+    }
+
+    private static void WriteStringArray(Utf8JsonWriter writer, List<string> values)
+    {
+        writer.WriteStartArray();
+        foreach (var value in values)
+        {
+            writer.WriteStringValue(value);
+        }
+
+        writer.WriteEndArray();
+    }
+
+    private static void WriteIntDictionary(Utf8JsonWriter writer, Dictionary<string, int> values)
+    {
+        writer.WriteStartObject();
+        foreach (var item in values.OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            writer.WriteNumber(item.Key, item.Value);
+        }
+
+        writer.WriteEndObject();
+    }
+
+    private static void WriteNullableString(Utf8JsonWriter writer, string propertyName, string? value)
+    {
+        if (value is null)
+        {
+            writer.WriteNull(propertyName);
+            return;
+        }
+
+        writer.WriteString(propertyName, value);
+    }
+
+    private static void WriteNullableDouble(Utf8JsonWriter writer, string propertyName, double? value)
+    {
+        if (!value.HasValue)
+        {
+            writer.WriteNull(propertyName);
+            return;
+        }
+
+        writer.WriteNumber(propertyName, value.Value);
     }
 }
 
-internal sealed class UsageRecord
+internal sealed class SummarySection
 {
-    public DateTimeOffset RecordedAt { get; init; }
-    public string Event { get; init; } = "Unknown";
-    public string? SessionId { get; set; }
-    public string? TurnId { get; init; }
-    public string? AgentId { get; set; }
-    public string? AgentType { get; init; }
-    public string? Model { get; init; }
-    public string? PermissionMode { get; init; }
-    public string? Cwd { get; init; }
-    public string? TranscriptPath { get; init; }
-    public long? DurationMs { get; init; }
-    public string? ToolName { get; init; }
-    public string? Command { get; init; }
-    public long? ToolResponseSize { get; init; }
-    public string? ToolResponsePreview { get; init; }
+    public string generated_at { get; set; } = string.Empty;
+    public string? period_from { get; set; }
+    public string? period_to { get; set; }
+    public string timezone { get; set; } = "local";
+    public int parsed_records { get; set; }
+    public int parse_errors { get; set; }
+    public int sessions { get; set; }
+    public int turns { get; set; }
+    public int repositories { get; set; }
+    public int models { get; set; }
+    public int tool_invocations { get; set; }
+    public int matched_tool_invocations { get; set; }
+    public int missing_pre { get; set; }
+    public int missing_post { get; set; }
+    public int duplicate_tool { get; set; }
+    public int subagent_runs { get; set; }
+    public int missing_start { get; set; }
+    public int missing_stop { get; set; }
+    public double weighted_score_total { get; set; }
+    public Dictionary<string, int> command_kind_counts { get; set; } = [];
+    public Dictionary<string, int> event_counts { get; set; } = [];
+    public double? limit_delta { get; set; }
+    public string? limit_unit { get; set; }
+}
+
+internal sealed class WorkRow
+{
+    public string name { get; set; } = string.Empty;
+    public int events { get; set; }
+    public int tool_invocations { get; set; }
+    public int matched_tool_invocations { get; set; }
+    public int missing_correlation { get; set; }
+    public long total_tool_elapsed_ms { get; set; }
+    public long total_subagent_duration_ms { get; set; }
+    public int bash_count { get; set; }
+    public int apply_patch_count { get; set; }
+    public long tool_input_bytes { get; set; }
+    public long tool_response_bytes { get; set; }
+    public double weighted_work_score { get; set; }
+    public double weighted_work_share { get; set; }
+    public Dictionary<string, int> command_kind_counts { get; set; } = [];
+    public Dictionary<string, int> event_counts { get; set; } = [];
+}
+
+internal sealed class CorrelationIssueRow
+{
+    public string area { get; set; } = string.Empty;
+    public string status { get; set; } = string.Empty;
+    public int count { get; set; }
+}
+
+internal sealed class AllocationSection
+{
+    public double? limit_before { get; set; }
+    public double? limit_after { get; set; }
+    public double limit_delta { get; set; }
+    public string limit_unit { get; set; } = "unknown";
+    public string allocation_basis { get; set; } = "weighted";
+    public List<AllocationRow> rows { get; set; } = [];
+}
+
+internal sealed class AllocationRow
+{
+    public string model { get; set; } = string.Empty;
+    public double basis_value { get; set; }
+    public double share { get; set; }
+    public double estimated_limit_delta { get; set; }
 }
 
 internal sealed class ParseError
 {
-    public string SourcePath { get; set; } = string.Empty;
-    public int Line { get; set; }
-    public string Message { get; set; } = string.Empty;
-    public string Exception { get; set; } = string.Empty;
+    public string source_path { get; set; } = string.Empty;
+    public int line { get; set; }
+    public string message { get; set; } = string.Empty;
+    public string exception { get; set; } = string.Empty;
 }
 
-internal sealed class ModelUsageStats
+internal sealed class UsageRecord
 {
-    public int Records { get; set; }
-    public int ToolUseCount { get; set; }
-    public int SubagentRunStarts { get; set; }
-    public int SubagentRunStops { get; set; }
-    public long SubagentDurationMs { get; set; }
-    public HashSet<string> Sessions { get; } = [];
+    public string? SchemaVersion { get; init; }
+    public bool IsV2 { get; init; }
+    public DateTimeOffset RecordedAt { get; init; }
+    public string Event { get; init; } = "Unknown";
+    public string? SessionId { get; init; }
+    public string? TurnId { get; init; }
+    public string? AgentId { get; init; }
+    public string? AgentType { get; init; }
+    public string? Model { get; init; }
+    public string? Cwd { get; init; }
+    public string? RepoRoot { get; init; }
+    public string? RepoName { get; init; }
+    public string? GitBranch { get; init; }
+    public string? GitCommit { get; init; }
+    public string? PermissionMode { get; init; }
+    public string? TranscriptPath { get; init; }
+    public string? ToolUseId { get; init; }
+    public string? ToolName { get; init; }
+    public string? ToolCategory { get; init; }
+    public string? Command { get; init; }
+    public string? CommandKind { get; init; }
+    public string? CommandRisk { get; init; }
+    public string? ToolResultClass { get; init; }
+    public long? ToolElapsedMs { get; init; }
+    public string? ToolCorrelationStatus { get; init; }
+    public long? ToolInputSize { get; init; }
+    public long? ToolResponseSize { get; init; }
+    public string? SubagentRunId { get; init; }
+    public long? SubagentDurationMs { get; init; }
+    public string? SubagentCorrelationStatus { get; init; }
+    public DateTimeOffset? StartedAt { get; init; }
+    public DateTimeOffset? StoppedAt { get; init; }
+
+    public string ModelKey => string.IsNullOrWhiteSpace(Model) ? "(unknown)" : Model!;
+    public string AgentTypeKey => string.IsNullOrWhiteSpace(AgentType) ? "parent/unassigned" : AgentType!;
+    public string ToolKey => string.IsNullOrWhiteSpace(ToolName) ? "(none)" : ToolName!;
+    public string RepositoryKey => !string.IsNullOrWhiteSpace(RepoName)
+        ? RepoName!
+        : !string.IsNullOrWhiteSpace(RepoRoot)
+            ? Path.GetFileName(RepoRoot!.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+            : !string.IsNullOrWhiteSpace(Cwd)
+                ? Path.GetFileName(Cwd!.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+                : "(unknown)";
 }
 
-internal sealed class AgentTypeUsageStats
+internal sealed class ToolInvocation
 {
-    public int TotalRecords { get; set; }
-    public int ToolUseCount { get; set; }
-    public int SubagentRunStarts { get; set; }
-    public int SubagentRunStops { get; set; }
-    public long SubagentDurationMs { get; set; }
-    public Dictionary<string, int> ToolNameCounts { get; } = [];
-}
+    public DateTimeOffset RecordedAt { get; init; }
+    public string CorrelationStatus { get; init; } = "unknown";
+    public string ModelKey { get; init; } = "(unknown)";
+    public string AgentTypeKey { get; init; } = "parent/unassigned";
+    public string ToolKey { get; init; } = "(none)";
+    public string RepositoryKey { get; init; } = "(unknown)";
+    public string? CommandKind { get; init; }
+    public long? ToolElapsedMs { get; init; }
+    public long? ToolInputBytes { get; init; }
+    public long? ToolResponseBytes { get; init; }
 
-internal sealed class TimelineStats
-{
-    public int TotalEvents { get; set; }
-    public int ToolUseCount { get; set; }
-    public int BashCount { get; set; }
-    public int ApplyPatchCount { get; set; }
-    public int SubagentStartCount { get; set; }
-    public int SubagentStopCount { get; set; }
-}
-
-internal sealed class ActiveSubagentRun
-{
-    public required string AgentId { get; set; }
-    public required string AgentType { get; set; }
-    public string? Model { get; set; }
-    public string? SessionId { get; set; }
-    public string? TurnId { get; set; }
-    public DateTimeOffset StartAt { get; set; }
-    public int ToolUseCount { get; set; }
-    public int ApplyPatchCount { get; set; }
-    public int BashCount { get; set; }
-}
-
-internal sealed class SubagentRunRecord
-{
-    public string AgentId { get; set; } = string.Empty;
-    public string? AgentType { get; set; }
-    public string? Model { get; set; }
-    public DateTimeOffset? StartAt { get; set; }
-    public DateTimeOffset? StopAt { get; set; }
-    public long? DurationMs { get; set; }
-    public int ToolUseCount { get; set; }
-    public int BashCount { get; set; }
-    public int ApplyPatchCount { get; set; }
-}
-
-internal sealed class WorkflowCheck
-{
-    public WorkflowCheck(string check, string result, string evidence)
+    public static ToolInvocation FromMatched(UsageRecord pre, UsageRecord post)
     {
-        Check = check;
-        Result = result;
-        Evidence = evidence;
+        return new ToolInvocation
+        {
+            RecordedAt = post.RecordedAt,
+            CorrelationStatus = "matched",
+            ModelKey = post.ModelKey,
+            AgentTypeKey = post.AgentTypeKey,
+            ToolKey = post.ToolKey,
+            RepositoryKey = post.RepositoryKey,
+            CommandKind = post.CommandKind ?? pre.CommandKind,
+            ToolElapsedMs = post.ToolElapsedMs ?? Math.Max(0L, (long)Math.Round((post.RecordedAt - pre.RecordedAt).TotalMilliseconds)),
+            ToolInputBytes = pre.ToolInputSize ?? post.ToolInputSize,
+            ToolResponseBytes = post.ToolResponseSize
+        };
     }
 
-    public string Check { get; }
-    public string Result { get; }
-    public string Evidence { get; }
+    public static ToolInvocation FromSingle(UsageRecord record, string status)
+    {
+        return new ToolInvocation
+        {
+            RecordedAt = record.RecordedAt,
+            CorrelationStatus = status,
+            ModelKey = record.ModelKey,
+            AgentTypeKey = record.AgentTypeKey,
+            ToolKey = record.ToolKey,
+            RepositoryKey = record.RepositoryKey,
+            CommandKind = record.CommandKind,
+            ToolElapsedMs = record.ToolElapsedMs,
+            ToolInputBytes = record.ToolInputSize,
+            ToolResponseBytes = record.ToolResponseSize
+        };
+    }
 }
 
-internal sealed class ModelRow
+internal sealed class SubagentRun
 {
-    public string Model { get; set; } = string.Empty;
-    public int Records { get; set; }
-    public int ToolUses { get; set; }
+    public DateTimeOffset RecordedAt { get; init; }
+    public string CorrelationStatus { get; init; } = "unknown";
+    public string ModelKey { get; init; } = "(unknown)";
+    public string AgentTypeKey { get; init; } = "parent/unassigned";
+    public string RepositoryKey { get; init; } = "(unknown)";
+    public long? DurationMs { get; init; }
+
+    public static SubagentRun FromMatched(UsageRecord start, UsageRecord stop)
+    {
+        return new SubagentRun
+        {
+            RecordedAt = stop.RecordedAt,
+            CorrelationStatus = "matched",
+            ModelKey = stop.ModelKey,
+            AgentTypeKey = stop.AgentTypeKey,
+            RepositoryKey = stop.RepositoryKey,
+            DurationMs = stop.SubagentDurationMs ?? Math.Max(0L, (long)Math.Round((stop.RecordedAt - start.RecordedAt).TotalMilliseconds))
+        };
+    }
+
+    public static SubagentRun FromStart(UsageRecord start, string status)
+    {
+        return new SubagentRun
+        {
+            RecordedAt = start.RecordedAt,
+            CorrelationStatus = status,
+            ModelKey = start.ModelKey,
+            AgentTypeKey = start.AgentTypeKey,
+            RepositoryKey = start.RepositoryKey,
+            DurationMs = start.SubagentDurationMs
+        };
+    }
+
+    public static SubagentRun FromStop(UsageRecord stop, string status)
+    {
+        return new SubagentRun
+        {
+            RecordedAt = stop.RecordedAt,
+            CorrelationStatus = status,
+            ModelKey = stop.ModelKey,
+            AgentTypeKey = stop.AgentTypeKey,
+            RepositoryKey = stop.RepositoryKey,
+            DurationMs = stop.SubagentDurationMs
+        };
+    }
+}
+
+internal sealed class WorkAccumulator
+{
+    public int Events { get; set; }
+    public int ToolInvocations { get; set; }
+    public int MatchedToolInvocations { get; set; }
+    public int MissingCorrelationCount { get; set; }
+    public long TotalToolElapsedMs { get; set; }
+    public long TotalSubagentDurationMs { get; set; }
+    public int BashCount { get; set; }
+    public int ApplyPatchCount { get; set; }
+    public long ToolInputBytes { get; set; }
+    public long ToolResponseBytes { get; set; }
+    public double WeightedWorkScore { get; set; }
+    public Dictionary<string, int> CommandKindCounts { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, int> EventCounts { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, int> ToolNameCounts { get; } = new(StringComparer.OrdinalIgnoreCase);
     public int SubagentRuns { get; set; }
-    public double SubagentDurationMinutes { get; set; }
-    public int Sessions { get; set; }
-}
-
-internal sealed class AgentTypeRow
-{
-    public string AgentType { get; set; } = string.Empty;
-    public int SubagentRuns { get; set; }
-    public int ToolUses { get; set; }
-    public int Bash { get; set; }
-    public int ApplyPatch { get; set; }
-    public double TotalSubagentDurationMinutes { get; set; }
-    public double? AvgSubagentDurationSec { get; set; }
-}
-
-internal sealed class TimelineRow
-{
-    public string Bucket { get; set; } = string.Empty;
-    public int TotalEvents { get; set; }
-    public int ToolUses { get; set; }
-    public int Bash { get; set; }
-    public int ApplyPatch { get; set; }
-    public int SubagentStarts { get; set; }
-    public int SubagentStops { get; set; }
 }
 
 internal static class Extensions
 {
-    public static TValue GetOrAdd<TKey, TValue>(this Dictionary<TKey, TValue> source, TKey key) where TKey : notnull
+    public static TValue GetOrAdd<TKey, TValue>(this Dictionary<TKey, TValue> source, TKey key)
+        where TKey : notnull
         where TValue : class, new()
     {
         if (!source.TryGetValue(key, out var value))
@@ -1346,5 +1763,17 @@ internal static class Extensions
         }
 
         return value;
+    }
+
+    public static void Increment(this Dictionary<string, int> source, string key)
+    {
+        if (source.TryGetValue(key, out var count))
+        {
+            source[key] = count + 1;
+        }
+        else
+        {
+            source[key] = 1;
+        }
     }
 }

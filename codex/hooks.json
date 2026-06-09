@@ -55,9 +55,23 @@
         ]
       }
     ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.codex/hooks/codex-agent-usage-logger.exe",
+            "commandWindows": "%USERPROFILE%\\.codex\\hooks\\codex-agent-usage-logger.exe",
+            "timeout": 10,
+            "statusMessage": "Logging tool use start"
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
-        "matcher": "Bash|apply_patch|Edit|Write",
+        "matcher": "*",
         "hooks": [
           {
             "type": "command",

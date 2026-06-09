@@ -9,6 +9,8 @@ return await Installer.RunAsync(args);
 internal static class Installer
 {
     private const string ManifestFileName = "codex-metrix-and-analyze.manifest.json";
+    private const string DefaultObservationLogFileName = "agent-observations.jsonl";
+    private const string DefaultObservationErrorLogFileName = "agent-observations-error.log";
     private static readonly string HookTemplateRelativePath = Path.Combine("codex", "hooks.json");
     private static readonly string LoggerSourceRelativePath = Path.Combine("hooks", "codex-agent-usage-logger.cs");
     private const string LoggerExecutableName = "codex-agent-usage-logger.exe";
@@ -129,8 +131,8 @@ internal static class Installer
         Console.WriteLine("Next steps:");
         Console.WriteLine("1. Open Codex and run /hooks to trust the new command hooks.");
         Console.WriteLine("2. Run `dotnet run --file scripts/test-hook.cs` from this repo.");
-        Console.WriteLine($"3. Review {GetDailyLogPath(Path.Combine(codexHome, "logs", "agent-usage.jsonl"))} after a Codex turn.");
-        Console.WriteLine($"4. If the hook ever fails, inspect {GetDailyLogPath(Path.Combine(codexHome, "logs", "agent-usage-error.log"))}.");
+        Console.WriteLine($"3. Review {GetDailyLogPath(Path.Combine(codexHome, "logs", DefaultObservationLogFileName))} after a Codex turn.");
+        Console.WriteLine($"4. If the hook ever fails, inspect {GetDailyLogPath(Path.Combine(codexHome, "logs", DefaultObservationErrorLogFileName))}.");
         return 0;
     }
 
@@ -182,7 +184,8 @@ internal static class Installer
         Console.WriteLine(options.DryRun ? "Install dry-run:" : "Install plan:");
         Console.WriteLine($"- Codex home: {codexHome}");
         Console.WriteLine($"- Logs dir: {targetLogsDir}");
-        Console.WriteLine($"- Error log: {GetDailyLogPath(Path.Combine(codexHome, "logs", "agent-usage-error.log"))}");
+        Console.WriteLine($"- Observation log: {GetDailyLogPath(Path.Combine(codexHome, "logs", DefaultObservationLogFileName))}");
+        Console.WriteLine($"- Error log: {GetDailyLogPath(Path.Combine(codexHome, "logs", DefaultObservationErrorLogFileName))}");
         Console.WriteLine($"- Backup root: {backupRoot}");
         Console.WriteLine($"- Manifest: {manifestPath}");
         Console.WriteLine($"- Publish: {LoggerSourceRelativePath} -> {tempPublishDir} using --use-current-runtime");
@@ -375,7 +378,8 @@ internal static class Installer
             WriteHookEvent(writer, "UserPromptSubmit", "Logging user prompt", hookExePath);
             WriteHookEvent(writer, "SubagentStart", "Logging subagent start", hookExePath, matcher: "*");
             WriteHookEvent(writer, "SubagentStop", "Logging subagent stop", hookExePath, matcher: "*");
-            WriteHookEvent(writer, "PostToolUse", "Logging tool use", hookExePath, matcher: "Bash|apply_patch|Edit|Write");
+            WriteHookEvent(writer, "PreToolUse", "Logging tool use start", hookExePath, matcher: "*");
+            WriteHookEvent(writer, "PostToolUse", "Logging tool use", hookExePath, matcher: "*");
             WriteHookEvent(writer, "Stop", "Logging turn stop", hookExePath);
 
             writer.WriteEndObject();
