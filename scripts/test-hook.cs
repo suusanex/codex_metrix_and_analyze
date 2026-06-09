@@ -37,6 +37,10 @@ internal static class HookTester
             await InvokeHookAsync(loggerPath, tempCodexHome, logBasePath, errorLogBasePath, CreateSessionStart(common));
             await InvokeHookAsync(loggerPath, tempCodexHome, logBasePath, errorLogBasePath, CreateSubagentStart(common, "agent-sub", "delegate"));
             await Task.Delay(30);
+            await InvokeHookAsync(loggerPath, tempCodexHome, logBasePath, errorLogBasePath, CreatePreToolUse(common, "agent-sub", "delegate", "tool-sub", "shell_command", "git rev-parse HEAD"));
+            await Task.Delay(10);
+            await InvokeHookAsync(loggerPath, tempCodexHome, logBasePath, errorLogBasePath, CreatePostToolUse(common, "agent-sub", "delegate", "tool-sub", "shell_command", "git rev-parse HEAD", 0, "abc123"));
+            await Task.Delay(10);
             await InvokeHookAsync(loggerPath, tempCodexHome, logBasePath, errorLogBasePath, CreateSubagentStop(common, "agent-sub", "delegate"));
 
             await InvokeHookAsync(loggerPath, tempCodexHome, logBasePath, errorLogBasePath, CreatePreToolUse(common, "agent-root", "root", "tool-1", "shell_command", "git status --short"));
@@ -125,6 +129,10 @@ internal static class HookTester
 
     private static async Task ValidateReportAsync(string repoRoot, string logPath, string legacyLogPath)
     {
+        var tempDirectory = Path.GetDirectoryName(logPath) ?? repoRoot;
+        var filteredToolFixturePath = Path.Combine(tempDirectory, "filtered-tool-fixture.jsonl");
+        var filteredSubagentFixturePath = Path.Combine(tempDirectory, "filtered-subagent-fixture.jsonl");
+
         var jsonOutput = await RunDotnetAsync(
             repoRoot,
             "run",
@@ -175,6 +183,82 @@ internal static class HookTester
                 issue.GetProperty("status").GetString() == "legacy_unavailable"))
         {
             throw new InvalidOperationException("Report did not emit legacy_unavailable correlation issue.");
+        }
+
+        await File.WriteAllTextAsync(
+            filteredToolFixturePath,
+            string.Join(
+                Environment.NewLine,
+                [
+                    "{\"schema_version\":\"2.0\",\"recorded_at\":\"2026-06-09T00:00:00.0000000+00:00\",\"event\":\"PreToolUse\",\"session_id\":\"filtered-tool\",\"turn_id\":\"turn-1\",\"agent_id\":\"agent-root\",\"agent_type\":\"root\",\"model\":\"gpt-test\",\"cwd\":\"" + EscapeJson(repoRoot) + "\",\"tool_use_id\":\"tool-filtered\",\"tool_name\":\"shell_command\",\"tool_correlation_status\":\"unknown\"}",
+                    "{\"schema_version\":\"2.0\",\"recorded_at\":\"2026-06-09T00:00:02.0000000+00:00\",\"event\":\"PostToolUse\",\"session_id\":\"filtered-tool\",\"turn_id\":\"turn-1\",\"agent_id\":\"agent-root\",\"agent_type\":\"root\",\"model\":\"gpt-test\",\"cwd\":\"" + EscapeJson(repoRoot) + "\",\"tool_use_id\":\"tool-filtered\",\"tool_name\":\"shell_command\",\"tool_correlation_status\":\"matched\",\"tool_elapsed_ms\":2000,\"tool_response_size\":20}"
+                ]) + Environment.NewLine,
+            Encoding.UTF8);
+
+        var filteredToolOutput = await RunDotnetAsync(
+            repoRoot,
+            "run",
+            "--file",
+            Path.Combine(repoRoot, "scripts", "codex-agent-usage-report.cs"),
+            "--",
+            "--log",
+            filteredToolFixturePath,
+            "--format",
+            "json",
+            "--from",
+            "2026-06-09T00:00:01Z");
+
+        using var filteredToolDocument = JsonDocument.Parse(filteredToolOutput.StandardOutput);
+        var filteredToolSummary = filteredToolDocument.RootElement.GetProperty("summary");
+        if (filteredToolSummary.GetProperty("matched_tool_invocations").GetInt32() < 1)
+        {
+            throw new InvalidOperationException("Filtered v2 report did not preserve matched tool correlation.");
+        }
+
+        if (filteredToolSummary.GetProperty("missing_pre").GetInt32() != 0)
+        {
+            throw new InvalidOperationException("Filtered v2 report incorrectly counted missing_pre.");
+        }
+
+        await File.WriteAllTextAsync(
+            filteredSubagentFixturePath,
+            string.Join(
+                Environment.NewLine,
+                [
+                    "{\"schema_version\":\"2.0\",\"recorded_at\":\"2026-06-09T00:00:00.0000000+00:00\",\"event\":\"SubagentStart\",\"session_id\":\"filtered-subagent\",\"turn_id\":\"turn-1\",\"agent_id\":\"agent-sub\",\"agent_type\":\"delegate\",\"model\":\"gpt-test\",\"cwd\":\"" + EscapeJson(repoRoot) + "\",\"subagent_run_id\":\"run-1\",\"subagent_correlation_status\":\"unknown\"}",
+                    "{\"schema_version\":\"2.0\",\"recorded_at\":\"2026-06-09T00:00:02.0000000+00:00\",\"event\":\"SubagentStop\",\"session_id\":\"filtered-subagent\",\"turn_id\":\"turn-1\",\"agent_id\":\"agent-sub\",\"agent_type\":\"delegate\",\"model\":\"gpt-test\",\"cwd\":\"" + EscapeJson(repoRoot) + "\",\"subagent_run_id\":\"run-1\",\"subagent_correlation_status\":\"matched\",\"subagent_duration_ms\":2000}"
+                ]) + Environment.NewLine,
+            Encoding.UTF8);
+
+        var filteredSubagentOutput = await RunDotnetAsync(
+            repoRoot,
+            "run",
+            "--file",
+            Path.Combine(repoRoot, "scripts", "codex-agent-usage-report.cs"),
+            "--",
+            "--log",
+            filteredSubagentFixturePath,
+            "--format",
+            "json",
+            "--from",
+            "2026-06-09T00:00:01Z");
+
+        using var filteredSubagentDocument = JsonDocument.Parse(filteredSubagentOutput.StandardOutput);
+        var filteredSubagentSummary = filteredSubagentDocument.RootElement.GetProperty("summary");
+        if (filteredSubagentSummary.GetProperty("missing_start").GetInt32() != 0)
+        {
+            throw new InvalidOperationException("Filtered v2 report incorrectly counted missing_start.");
+        }
+
+        var filteredAgentRows = filteredSubagentDocument.RootElement
+            .GetProperty("agent_type_rows")
+            .EnumerateArray()
+            .ToArray();
+        var delegateRow = filteredAgentRows.FirstOrDefault(row => row.GetProperty("name").GetString() == "delegate");
+        if (delegateRow.ValueKind == JsonValueKind.Undefined ||
+            delegateRow.GetProperty("total_subagent_duration_ms").GetInt64() <= 0)
+        {
+            throw new InvalidOperationException("Filtered v2 report did not preserve matched subagent duration.");
         }
 
         var markdownOutput = await RunDotnetAsync(
@@ -234,6 +318,16 @@ internal static class HookTester
         {
             throw new InvalidOperationException("command_kind was not classified.");
         }
+
+        if (matched.GetProperty("subagent_span_id").ValueKind != JsonValueKind.Null)
+        {
+            throw new InvalidOperationException("Parent tool event unexpectedly had subagent_span_id.");
+        }
+
+        if (matched.GetProperty("parent_span_id").GetString() != matched.GetProperty("turn_span_id").GetString())
+        {
+            throw new InvalidOperationException("Parent tool event did not use turn span as parent.");
+        }
     }
 
     private static void ValidateMissingPre(List<JsonDocument> documents)
@@ -277,6 +371,30 @@ internal static class HookTester
         if (stop.GetProperty("subagent_duration_ms").GetInt64() <= 0)
         {
             throw new InvalidOperationException("subagent_duration_ms was not recorded.");
+        }
+
+        var subagentTool = documents
+            .Select(doc => doc.RootElement)
+            .FirstOrDefault(element =>
+                element.GetProperty("event").GetString() == "PostToolUse" &&
+                element.GetProperty("agent_id").GetString() == "agent-sub" &&
+                element.TryGetProperty("tool_use_id", out var toolUseId) &&
+                toolUseId.GetString() == "tool-sub");
+
+        if (subagentTool.ValueKind == JsonValueKind.Undefined)
+        {
+            throw new InvalidOperationException("Subagent PostToolUse was not logged.");
+        }
+
+        var subagentSpanId = subagentTool.GetProperty("subagent_span_id").GetString();
+        if (string.IsNullOrWhiteSpace(subagentSpanId))
+        {
+            throw new InvalidOperationException("Subagent tool event did not carry subagent_span_id.");
+        }
+
+        if (subagentTool.GetProperty("parent_span_id").GetString() != subagentSpanId)
+        {
+            throw new InvalidOperationException("Subagent tool event did not use subagent span as parent.");
         }
     }
 
@@ -369,9 +487,13 @@ internal static class HookTester
 
         using var doc = JsonDocument.Parse(hooksJson);
         var hooksRoot = doc.RootElement.GetProperty("hooks");
+        ValidateHookEvent(hooksRoot, "SessionStart", loggerPath, expectedMatcher: "*");
         ValidateHookEvent(hooksRoot, "UserPromptSubmit", loggerPath, expectedMatcher: null);
+        ValidateHookEvent(hooksRoot, "SubagentStart", loggerPath, expectedMatcher: "*");
+        ValidateHookEvent(hooksRoot, "SubagentStop", loggerPath, expectedMatcher: "*");
         ValidateHookEvent(hooksRoot, "PreToolUse", loggerPath, expectedMatcher: "*");
         ValidateHookEvent(hooksRoot, "PostToolUse", loggerPath, expectedMatcher: "*");
+        ValidateHookEvent(hooksRoot, "Stop", loggerPath, expectedMatcher: null);
     }
 
     private static void ValidateHookEvent(JsonElement hooksRoot, string eventName, string loggerPath, string? expectedMatcher)

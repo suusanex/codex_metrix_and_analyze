@@ -702,6 +702,10 @@ internal static class UsageReportGenerator
                     pending.Remove(key);
                     runs.Add(SubagentRun.FromMatched(started, record));
                 }
+                else if (record.SubagentCorrelationStatus == "matched")
+                {
+                    runs.Add(SubagentRun.FromStop(record, "matched"));
+                }
                 else if (record.SubagentCorrelationStatus == "missing_start")
                 {
                     runs.Add(SubagentRun.FromStop(record, "missing_start"));
@@ -765,6 +769,10 @@ internal static class UsageReportGenerator
                 {
                     pending.Remove(key);
                     invocations.Add(ToolInvocation.FromMatched(started, record));
+                }
+                else if (record.ToolCorrelationStatus == "matched")
+                {
+                    invocations.Add(ToolInvocation.FromSingle(record, "matched"));
                 }
                 else if (record.ToolCorrelationStatus == "missing_pre")
                 {

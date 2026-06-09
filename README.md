@@ -46,7 +46,7 @@ legacy 互換:
 - 観測ポリシー: `capture_policy`
 - 将来の OTLP 変換向け: `trace_id`, `turn_span_id`, `subagent_span_id`, `tool_span_id`, `parent_span_id`, `span_id`
 
-詳細は [docs/event-schema.md](/C:/Users/suusa/.codex/worktrees/e1ef/codex_metrix_and_analyze/docs/event-schema.md) を参照。
+詳細は [docs/event-schema.md](docs/event-schema.md) を参照。
 
 ## フックの導入
 
@@ -153,5 +153,5 @@ JSON 出力は次の top-level section を持つ。
 
 ## サンプル
 
-- v2 sample: [examples/agent-observations.sample.jsonl](/C:/Users/suusa/.codex/worktrees/e1ef/codex_metrix_and_analyze/examples/agent-observations.sample.jsonl)
-- legacy sample: [examples/agent-usage.sample.jsonl](/C:/Users/suusa/.codex/worktrees/e1ef/codex_metrix_and_analyze/examples/agent-usage.sample.jsonl)
+- v2 sample: [examples/agent-observations.sample.jsonl](examples/agent-observations.sample.jsonl)
+- legacy sample: [examples/agent-usage.sample.jsonl](examples/agent-usage.sample.jsonl)

@@ -123,10 +123,13 @@ internal static class ProgramEntry
             agentType,
             model,
             settings);
+        var activeSubagent = await GetActiveSubagentAsync(sessionId, agentId, settings);
 
         var traceId = CreateTraceId(sessionId);
         var turnSpanId = CreateSpanId("turn", sessionId, turnId);
-        var subagentSpanId = CreateSpanId("subagent", subagentCorrelation.SubagentRunId, null);
+        var effectiveSubagentRunId = subagentCorrelation.SubagentRunId ?? activeSubagent?.SubagentRunId;
+        var effectiveSubagentStartedAt = subagentCorrelation.StartedAt ?? activeSubagent?.StartedAt;
+        var subagentSpanId = CreateSpanId("subagent", effectiveSubagentRunId, null);
         var toolSpanId = CreateSpanId("tool", tool.ToolUseId, null);
         var parentSpanId = !string.IsNullOrWhiteSpace(subagentSpanId)
             ? subagentSpanId
@@ -205,8 +208,8 @@ internal static class ProgramEntry
             WriteNullableInt64(writer, "tool_elapsed_ms", toolCorrelation.ToolElapsedMs);
             WriteNullableString(writer, "tool_correlation_status", toolCorrelation.Status);
 
-            WriteNullableString(writer, "subagent_run_id", subagentCorrelation.SubagentRunId);
-            WriteNullableString(writer, "subagent_started_at", subagentCorrelation.StartedAt);
+            WriteNullableString(writer, "subagent_run_id", effectiveSubagentRunId);
+            WriteNullableString(writer, "subagent_started_at", effectiveSubagentStartedAt);
             WriteNullableString(writer, "subagent_stopped_at", subagentCorrelation.StoppedAt);
             WriteNullableInt64(writer, "subagent_duration_ms", subagentCorrelation.DurationMs);
             WriteNullableString(writer, "subagent_correlation_status", subagentCorrelation.Status);
@@ -480,6 +483,37 @@ internal static class ProgramEntry
         {
             TryAppendErrorLog("subagent-state-read-failed", ex, null, null);
             return new SubagentCorrelationResult(null, null, ToIso8601(recordedAt), null, "missing_start", null, null, null);
+        }
+    }
+
+    private static async Task<ActiveSubagentState?> GetActiveSubagentAsync(
+        string? sessionId,
+        string? agentId,
+        ObservationSettings settings)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(agentId))
+        {
+            return null;
+        }
+
+        var key = BuildSubagentStateKey(sessionId, agentId);
+        var statePath = Path.Combine(settings.SubagentStateDirectory, SafeFilename(key));
+        if (!File.Exists(statePath))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(await File.ReadAllTextAsync(statePath, Encoding.UTF8));
+            return new ActiveSubagentState(
+                GetString(document.RootElement, "subagent_run_id"),
+                GetString(document.RootElement, "started_at"));
+        }
+        catch (Exception ex)
+        {
+            TryAppendErrorLog("active-subagent-state-read-failed", ex, null, null);
+            return null;
         }
     }
 
@@ -1381,6 +1415,8 @@ internal sealed record SubagentCorrelationResult(
 {
     public static SubagentCorrelationResult Empty { get; } = new(null, null, null, null, null, null, null, null);
 }
+
+internal sealed record ActiveSubagentState(string? SubagentRunId, string? StartedAt);
 
 internal sealed record TranscriptMetadata(long? FileSize, string? FileMtime, string? FileHash, string Status)
 {
